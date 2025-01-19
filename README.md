@@ -1,5 +1,8 @@
 # AsyncSockets
 
+🚧 WARNING 🚧
+This is still a work in progress, and is not yet stable.
+
 A modern Swift package providing an async/await WebSocket client implementation using Apple's Network framework. Built for Swift Concurrency, it offers a clean and type-safe API for WebSocket communications.
 
 ## Installation
