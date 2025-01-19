@@ -55,6 +55,8 @@ public final class SocketConnection: Sendable {
     
     private let genericPublishers: Lock<[String: AnySendable]> = Lock([:])
     
+    private let report: Lock<NWConnection.PendingDataTransferReport?> = Lock(nil)
+    
     private let decoder = JSONDecoder()
     
     public static let defaultSocketOptions: WebSocketProtocolOptions = {
@@ -70,12 +72,13 @@ public final class SocketConnection: Sendable {
         self.init(endpoint: NWEndpoint.url(url), options: options)
     }
     
-    convenience init(
+    convenience init?(
         host: String,
         port: Int,
         options: Socket.Options
     ) {
-        self.init(endpoint: NWEndpoint.hostPort(host: .init(host), port: NWEndpoint.Port(integerLiteral: UInt16(port))), options: options)
+        guard let port = NWEndpoint.Port("\(port)") else { return nil }
+        self.init(endpoint: NWEndpoint.hostPort(host: .init(host), port: port), options: options)
     }
     
     init(
@@ -107,7 +110,12 @@ public final class SocketConnection: Sendable {
 extension SocketConnection {
     
     func connect() async throws {
-        guard self.connection.state == .setup else { return }
+        guard self.connection.state == .setup else {
+            if self.connection.state != .ready {
+                throw SocketError.wsError(.init(domain: .WSConnectionDomain, code: .invalidConnectionAccess))
+            }
+            return
+        }
         
         try await withCheckedThrowingContinuation { [weak self] (continuation: CheckedContinuation<Void, Error>) in
             guard let self else {
@@ -117,7 +125,7 @@ extension SocketConnection {
             
             self.connectionContinuation.unsafeLock()
             guard self.connectionContinuation.unsafeValue == nil else {
-                continuation.resume(throwing: CancellationError())
+                continuation.resume(throwing: SocketError.wsError(.init(domain: .WSConnectionDomain, code: .invalidConnectionAccess)))
                 self.connectionContinuation.unlock()
                 return
             }
@@ -278,6 +286,7 @@ extension SocketConnection {
     
     private func receive(completion: @escaping @Sendable (Result<SocketMessage, Error>) -> Void) {
         guard self.state == .connected else {
+            completion(.failure(SocketError.wsError(.init(domain: .WSConnectionDomain, code: .socketNotConnected))))
             return
         }
         
@@ -344,11 +353,11 @@ extension SocketConnection {
             case .waiting(let error):
                 self._state.set(.disconnected)
                 self.connectionContinuation.modify { continuation in
-                    continuation?.resume(throwing: error)
+                    continuation?.resume(throwing: SocketError(error))
                     continuation = nil
                 }
                 self.disconnectionContinuation.modify { continuation in
-                    continuation?.resume(throwing: error)
+                    continuation?.resume(throwing: SocketError(error))
                     continuation = nil
                 }
             case .ready:
@@ -364,11 +373,11 @@ extension SocketConnection {
             case .failed(let error):
                 self._state.set(.disconnected)
                 self.connectionContinuation.modify { continuation in
-                    continuation?.resume(throwing: error)
+                    continuation?.resume(throwing: SocketError(error))
                     continuation = nil
                 }
                 self.disconnectionContinuation.modify { continuation in
-                    continuation?.resume(throwing: error)
+                    continuation?.resume(throwing: SocketError(error))
                     continuation = nil
                 }
             case .cancelled:

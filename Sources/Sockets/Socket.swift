@@ -25,6 +25,12 @@ public final class Socket: Sendable {
         }
     }
     
+    /// The current state of the socket connection
+    public var state: SocketConnection.State { connection.state }
+    
+    /// The current closeCode of the socket connection. Defaults to `.noStatusReceived` if not closed.
+    public var closeCode: CloseCode { connection.closeCode }
+    
     /// The underlying socket connection.
     private let connection: SocketConnection
 
@@ -32,8 +38,9 @@ public final class Socket: Sendable {
         self.connection = SocketConnection(url: url, options: options)
     }
     
-    public init(host: String, port: Int, options: Options = Options()) {
-        self.connection = SocketConnection(host: host, port: port, options: options)
+    public init?(host: String, port: Int, options: Options = Options()) {
+        guard let connection = SocketConnection(host: host, port: port, options: options) else { return nil }
+        self.connection = connection
     }
     
     /// Start the socket connection.
