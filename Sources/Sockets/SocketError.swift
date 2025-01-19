@@ -152,6 +152,8 @@ public struct WSError: Error, @unchecked Sendable {
             "Failed to connect to the socket for an unknown reason"
         case .failedToDecode:
             "Failed to decode the received data"
+        case .connectionTimedOut:
+            "Failed to establish connection in time.  Edit this timeout value in `Socket.Options`."
         }
     }
     
@@ -174,8 +176,9 @@ public enum WSErrorCode: Int, Sendable {
     case connectionNotReady = 5003
     case disconnectFailed = 5004
     case connectFailed = 5005
+    case connectionTimedOut = 5006
     
     // MARK: - WSDataDomain
-    case failedToEncode = 5006
-    case failedToDecode = 5007
+    case failedToEncode = 5007
+    case failedToDecode = 5008
 }

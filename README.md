@@ -94,4 +94,4 @@ for try await message in socket.messages() {
 
 ## License
 
-This project is available under the MIT license. See the LICENSE file for more info. 
+See the [LICENSE](LICENSE) for more info.
