@@ -45,16 +45,9 @@ final class CloseTests: XCTestCase {
                         socket.close()
                     }
                     
-                    // Verify connection state
-                    let mirror = Mirror(reflecting: socket)
-                    guard let connection = mirror.children.first(where: { $0.label == "connection" })?.value as? SocketConnection else {
-                        XCTFail("Could not access internal connection")
-                        return
-                    }
-                    
                     // Give a small delay for the close to process
                     try await Task.sleep(nanoseconds: 100_000_000)  // 0.1 seconds
-                    XCTAssertEqual(connection.state, .disconnected)
+                    XCTAssertEqual(socket.state, .disconnected)
                 }
             }
             

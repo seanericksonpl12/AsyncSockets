@@ -1,5 +1,5 @@
 //
-//  Lock.swift
+//  AsyncConnection.swift
 //
 //  Copyright (c) 2025, Sean Erickson
 //
@@ -38,45 +38,31 @@
 
 import Foundation
 
-final class Lock<Value: Sendable>: @unchecked Sendable {
-    private let _lock = NSLock()
-    private var _value: Value
-    private var onDeinit: (Value) -> Void = { _ in }
+/// A state representing the state of a SocketConnection
+public enum ConnectionState: Sendable {
+    case connecting
+    case connected
+    case disconnected
+}
+
+protocol AsyncConnection: Sendable, AnyObject {
+    var closeCode: CloseCode { get }
+    var state: ConnectionState { get }
     
-    deinit {
-        onDeinit(_value)
-    }
+    init(url: URL, options: Socket.Options)
+    init?(host: String, port: Int, options: Socket.Options)
     
-    var value: Value {
-        _lock.withLock { _value }
-    }
+    func connect() async throws
+    func close(withCode code: CloseCode?) async throws
+    func close(withCode code: CloseCode?)
+    func receive() async throws -> SocketMessage
+    func receive<T: Decodable>(decodingType: T.Type) async throws -> T
+    func receiveAndPublish()
+    func send(_ text: String) async throws
+    func send(_ data: Data) async throws
+    func ping() async throws
+    func buildSequence<T: Decodable & Sendable>() -> AsyncSocketSequence<T>
     
-    var unsafeValue: Value {
-        get {
-            _value
-        }
-        set {
-            _value = newValue
-        }
-    }
-    
-    func unsafeLock() {
-        _lock.lock()
-    }
-    
-    func unlock() {
-        _lock.unlock()
-    }
-    
-    func set(_ newValue: Value) {
-        _lock.withLock { _value = newValue }
-    }
-    
-    func modify(_ transform: (inout Value) -> Void) {
-        _lock.withLock { transform(&_value) }
-    }
-    
-    init(_ value: Value) {
-        self._value = value
-    }
+    func onStateChange(_ action: @Sendable @escaping (ConnectionState) -> Void)
+    func onShouldRefresh(_ action: @Sendable @escaping () -> Void)
 }

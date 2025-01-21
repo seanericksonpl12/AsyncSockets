@@ -43,11 +43,9 @@ public final class AsyncSocketSequence<Message: Decodable & Sendable>: AsyncSequ
     
     public typealias AsyncIterator = AsyncThrowingStream<Message, Error>.Iterator
     
-    internal typealias Value = (connection: SocketConnection, result: Result<SocketMessage, Error>)
+    internal typealias Value = (connection: AsyncConnection, result: Result<SocketMessage, Error>)
     
     private let continuationLock: Lock<AsyncThrowingStream<Message, Error>.Continuation?> = Lock(nil)
-    
-    private let ignoreDecodeError: Bool?
     
     private let stream: Lazy<AsyncThrowingStream<Message, Error>> = Lazy()
 
@@ -55,9 +53,8 @@ public final class AsyncSocketSequence<Message: Decodable & Sendable>: AsyncSequ
     
     private let decoder = JSONDecoder()
     
-    internal init(connection: SocketConnection, ignoringDecodeError: Bool? = nil) {
+    internal init(connection: AsyncConnection) {
         self.id = UUID()
-        self.ignoreDecodeError = ignoringDecodeError
         self.stream.set { [weak self, weak connection] in
             guard let self, let connection else {
                 return AsyncThrowingStream<Message, Error> { $0.finish() }
@@ -84,15 +81,9 @@ public final class AsyncSocketSequence<Message: Decodable & Sendable>: AsyncSequ
             guard let continuation else { return }
             switch value.result {
             case .success(let message):
-                if let ignoreDecodeError, (Message.self != SocketMessage.self) {
-                    do {
-                        let data = try decode(message, type: Message.self)
+                if (Message.self != SocketMessage.self) {
+                    if let data = try? decode(message, type: Message.self) {
                         continuation.yield(data)
-                    } catch {
-                        if !ignoreDecodeError {
-                            continuation.finish(throwing: error)
-                            return
-                        }
                     }
                 } else if let socketMessage = message as? Message {
                     continuation.yield(socketMessage)
