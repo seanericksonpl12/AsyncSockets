@@ -76,7 +76,7 @@ public final class AsyncSocketSequence<Message: Decodable & Sendable>: AsyncSequ
             return
         }
         
-        guard value.connection.state == .connected || value.connection.state == .migrating else {
+        guard value.connection.state == .connected else {
             self.continuationLock.value?.finish()
             return
         }

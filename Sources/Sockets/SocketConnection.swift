@@ -44,7 +44,6 @@ public final class SocketConnection: Sendable {
     /// A state representing the state of a SocketConnection
     public enum State: Sendable {
         case connecting
-        case migrating
         case connected
         case disconnected
     }
@@ -69,14 +68,8 @@ public final class SocketConnection: Sendable {
     /// The continuation for disconnecting, fulfilled successfully when the connection receives proper FIN/ACK messaging from the server
     private let disconnectionContinuation: Lock<CheckedContinuation<Void, Error>?> = Lock(nil)
     
-    /// Storage for all currently running `receive` tasks, for the purpose of transferring the tasks to a new connection upon migration.
-    private let receiveContinuations: Lock<[UUID: CheckedContinuation<SocketMessage, Error>]> = Lock([:])
-    
     /// The underlying `NWConnection`
-    private var connection: NWConnection { _connection.value }
-    
-    /// A separate connection for sending messages - used as a temporary buffer when migrating
-    private var sendConnection: NWConnection { _sendConnection.value ?? _connection.value }
+    private let connection: NWConnection
     
     /// The connection endpoing
     private let endpoint: NWEndpoint
@@ -101,12 +94,6 @@ public final class SocketConnection: Sendable {
     
     /// `currentPath` mutable threadsafe storage
     private let _currentPath: Lock<NWPath?>
-    
-    /// `connection` mutable threadsafe storage
-    private let _connection: Lock<NWConnection>
-    
-    /// `sendConnection` mutable threadsafe storage
-    private let _sendConnection: Lock<NWConnection?> = Lock(nil)
     
     /// A publisher for distributing received messages to all subscribers.  Allows any number of `AsyncSocketSequences` to run on the same connection.
     private let publisher: Publisher<(connection: SocketConnection, result: Result<SocketMessage, Error>)> = Publisher()
@@ -159,15 +146,14 @@ public final class SocketConnection: Sendable {
         self.parameters = NWParameters(tls: options.allowInsecureConnections ? nil : .init(), tcp: options.tcpProtocolOptions)
         self.parameters.defaultProtocolStack.applicationProtocols.insert(options.websocketProtocolOptions, at: 0)
         self.endpoint = endpoint
-        self._connection = Lock(NWConnection(to: self.endpoint, using: self.parameters))
-        self._currentPath = Lock(_connection.value.currentPath)
+        self.connection = NWConnection(to: self.endpoint, using: self.parameters)
+        self._currentPath = Lock(connection.currentPath)
         self.setHandlers(for: self.connection)
     }
     
     /// clean up any active continuations.
     deinit {
         killAllStreams()
-        cancelMigration()
         self.connectionContinuation.modify { connectionContinuation in
             connectionContinuation?.resume()
             connectionContinuation = nil
@@ -213,9 +199,6 @@ extension SocketConnection {
     func close(withCode code: CloseCode?) {
         defer { killAllStreams() }
         guard self.state != .disconnected else { return }
-        if self.state == .migrating {
-            cancelMigration()
-        }
         
         // TODO: - Send correct close code info to server
         self.handleClose(closeCode: code ?? .protocolCode(.goingAway), reason: nil)
@@ -228,10 +211,6 @@ extension SocketConnection {
         
         guard self.state != .disconnected else {
             return
-        }
-        
-        if self.state == .migrating {
-            cancelMigration()
         }
         
         // TODO: - Send correct close code info to server
@@ -285,7 +264,7 @@ extension SocketConnection {
     }
     
     private func send(data: Data, context: Context) async throws {
-        guard self.state == .connected || self.state == .migrating else {
+        guard self.state == .connected else {
             throw SocketError.wsError(
                 .init(
                     domain: .WSConnectionDomain,
@@ -298,7 +277,7 @@ extension SocketConnection {
         try await withCheckedThrowingContinuation { [weak self] (continuation: CheckedContinuation<Void, Error>) in
             guard let self else { return }
 
-            self.sendConnection.send(
+            self.connection.send(
                 content: data,
                 contentContext: context,
                 isComplete: true,
@@ -325,20 +304,17 @@ extension SocketConnection {
     
     func receive() async throws -> SocketMessage {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<SocketMessage, Error>) in
-            let id = UUID()
-            self.receiveContinuations.modify { $0[id] = continuation }
             self.receive { [weak self] result in
-                guard let self else { return }
-                self.receiveContinuations.modify { continuations in
-                    guard let continuation = continuations[id] else { return }
-                    self.publisher.push((connection: self, result: result))
-                    switch result {
-                    case .success(let message):
-                        continuation.resume(returning: message)
-                    case .failure(let error):
-                        continuation.resume(throwing: error)
-                    }
-                    continuations[id] = nil
+                guard let self else {
+                    continuation.resume(throwing: SocketError.wsError(.init(domain: .WSConnectionDomain, code: .connectionNotReady)))
+                    return
+                }
+                self.publisher.push((connection: self, result: result))
+                switch result {
+                case .success(let message):
+                    continuation.resume(returning: message)
+                case .failure(let error):
+                    continuation.resume(throwing: error)
                 }
             }
         }
@@ -354,7 +330,7 @@ extension SocketConnection {
     
     /// Receive and parse a value directly from the provided connection.
     private func receive(connection: NWConnection? = nil, completion: @escaping @Sendable (Result<SocketMessage, Error>) -> Void) {
-        guard self.state == .connected || self.state == .migrating else {
+        guard self.state == .connected else {
             completion(.failure(SocketError.wsError(.init(domain: .WSConnectionDomain, code: .socketNotConnected))))
             return
         }
@@ -395,7 +371,7 @@ extension SocketConnection {
     }
     
     func ping() async throws {
-        guard self.state == .connected || self.state == .migrating else { return }
+        guard self.state == .connected else { return }
         guard let ping = "ping".data(using: .utf8) else { return }
         
         let context = Context(identifier: "pingContext", metadata: [WebSocketMetadata(opcode: .ping)])
@@ -425,7 +401,6 @@ extension SocketConnection {
     private func setHandlers(for connection: NWConnection) {
         setStateHandler(connection: connection)
         setPathHandler(connection: connection)
-        setBetterPathHandler(connection: connection)
         setViabilityHandler(connection: connection)
     }
     
@@ -497,15 +472,6 @@ extension SocketConnection {
         }
     }
     
-    private func setBetterPathHandler(connection: NWConnection) {
-        connection.betterPathUpdateHandler = { [weak self] betterPathAvailable in
-            guard let self, self.allowPathMigration else { return }
-            if betterPathAvailable {
-                self.migrate()
-            }
-        }
-    }
-    
     private func setViabilityHandler(connection: NWConnection) {
         connection.viabilityUpdateHandler = { [weak self] isViable in
             guard let self else { return }
@@ -527,7 +493,6 @@ extension SocketConnection {
     }
     
     private func handleError(error: SocketError) {
-        print("handling \(error) for \(debugNumber)")
         switch error {
         case .nwError(let nwError):
             switch nwError {
@@ -589,91 +554,5 @@ extension SocketConnection {
             }
             streams.removeAll()
         }
-    }
-}
-
-// MARK: - Migration
-extension SocketConnection {
-    
-    /// Migrate to a new connection.  Only call when a better path is detected.
-    func migrate() {
-        guard self.state == .connected else { return }
-        
-        let newConnection = NWConnection(to: self.endpoint, using: self.parameters)
-        // Swap send buffer
-        self._sendConnection.set(newConnection)
-        
-        newConnection.stateUpdateHandler = { [weak self] state in
-            guard let self = self else { return }
-            if state == .ready {
-                migrateReceiveTasks(with: newConnection)
-                migrateStreams(with: newConnection)
-                self._connection.modify { oldConnection in
-                    oldConnection.stateUpdateHandler = nil
-                    oldConnection.pathUpdateHandler = nil
-                    oldConnection.betterPathUpdateHandler = nil
-                    oldConnection.viabilityUpdateHandler = nil
-                    oldConnection.cancel()
-                    oldConnection = newConnection
-                }
-                self._sendConnection.set(nil)
-                self._state.set(.connected)
-                setHandlers(for: newConnection)
-            }
-        }
-        self._state.set(.migrating)
-        newConnection.start(queue: self.queue)
-    }
-    
-    /// Transfer outstanding `receive` continuations to a new connection and re-listen
-    private func migrateReceiveTasks(with newConnection: NWConnection) {
-        let receiveDictionary = self.receiveContinuations.value
-        
-        for key in receiveDictionary.keys {
-            var continuation: CheckedContinuation<SocketMessage, Error>?
-            self.receiveContinuations.modify { continuations in
-                continuation = continuations[key]
-                continuations[key] = nil
-            }
-            guard let continuation else { continue }
-            
-            self.receive(connection: newConnection) { [weak self] result in
-                guard let self else { return }
-                self.publisher.push((connection: self, result: result))
-                switch result {
-                case .success(let message):
-                    continuation.resume(returning: message)
-                case .failure(let error):
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
-    }
-    
-    /// Transfer all active streams to a new connection, re-listening with the new connection.
-    private func migrateStreams(with newConnection: NWConnection) {
-        publisher.editSubscribers { subscribers in
-            for subscriber in subscribers {
-                self.receive(connection: newConnection) { [weak self] result in
-                    guard let self else { return }
-                    subscriber.didReceiveValue((connection: self, result: result))
-                }
-            }
-        }
-    }
-    
-    private func cancelMigration() {
-        self.receiveContinuations.modify { continuations in
-            for continuation in continuations.values {
-                continuation.resume(throwing: SocketError(CancellationError()))
-            }
-            continuations = [:]
-        }
-        self._sendConnection.modify { connection in
-            connection?.cancel()
-            connection = nil
-        }
-        
-        self.setState(for: connection)
     }
 }

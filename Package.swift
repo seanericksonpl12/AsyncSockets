@@ -6,10 +6,10 @@ import PackageDescription
 let package = Package(
     name: "AsyncSockets",
     platforms: [
-        .iOS("17.0"),
-        .macOS("14.0"),
-        .tvOS("17.0"),
-        .watchOS("10.0")
+        .iOS("13.0"),
+        .macOS("13.0"),
+        .tvOS("13.0"),
+        .watchOS("6.0")
     ],
     products: [
         .library(
