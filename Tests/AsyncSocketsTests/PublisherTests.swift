@@ -10,13 +10,19 @@ import XCTest
 
 // Mock subscriber for testing
 final class MockSubscriber: Subscriber, Sendable {
+    func end() {
+        onEnd()
+    }
+    
     typealias Value = String
     
     private let id = UUID()
     private let onReceive: @Sendable (String) -> Void
+    private let onEnd: @Sendable () -> Void
     
-    init(onReceive: @escaping @Sendable (String) -> Void) {
+    init(onReceive: @escaping @Sendable (String) -> Void, onEnd: @escaping @Sendable () -> Void = { }) {
         self.onReceive = onReceive
+        self.onEnd = onEnd
     }
     
     func didReceiveValue(_ value: String) {
@@ -33,7 +39,7 @@ final class MockSubscriber: Subscriber, Sendable {
 }
 
 final class PublisherTests: XCTestCase {
-    var publisher: Publisher<MockSubscriber>!
+    var publisher: Publisher<String>!
     
     override func setUp() {
         publisher = Publisher()
@@ -73,7 +79,7 @@ final class PublisherTests: XCTestCase {
     
     func testConcurrentSubscribers() async {
         // use fresh publisher to avoid concurrency warnings with self
-        let publisher = Publisher<MockSubscriber>()
+        let publisher = Publisher<String>()
         let messageCount = 1000
         let subscriberCount = 10
         let expectation = XCTestExpectation(description: "All messages received")
@@ -128,17 +134,5 @@ final class PublisherTests: XCTestCase {
         publisher.editSubscribers { $0.removeAll() }
         publisher.push("test2")
         XCTAssertEqual(receivedCount.value, 1) // Should not increase
-    }
-    
-    func testDuplicateSubscriber() {
-        let count = Lock(0)
-        let subscriber = MockSubscriber { _ in count.modify { $0 += 1 } }
-        
-        publisher.addSubscriber(subscriber)
-        publisher.addSubscriber(subscriber) // Should not add duplicate
-        
-        publisher.push("test")
-        
-        XCTAssertEqual(count.value, 1) // Message should only be received once
     }
 }

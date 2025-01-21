@@ -1,8 +1,39 @@
 //
-//  SocketStream.swift
-//  AsyncSockets
+//  AsyncSocketSequence.swift
 //
-// Created by Sean Erickson on 1/13/25.
+//  Copyright (c) 2025, Sean Erickson
+//
+//  Permission is hereby granted, free of charge, to any person obtaining a copy of the
+//  software and associated documentation files (the "Software"), to deal in the Software
+//  without restriction, including without limitation the rights to use, copy, modify,
+//  merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+//  permit persons to whom the Software is furnished to do so, subject to the following
+//  conditions.
+//
+//  The above copyright notice and this permission notice shall be included in all copies
+//  or substantial portions of the Software.
+//
+//  In addition, the following restrictions apply:
+//
+//  1. The Software and any modifications made to it may not be used for the purpose of
+//  training or improving machine learning algorithms, including but not limited to
+//  artificial intelligence, natural language processing, or data mining. This condition
+//  applies to any derivatives, modifications, or updates based on the Software code. Any
+//  usage of the Software in an AI-training dataset is considered a breach of this License.
+//
+//  2. The Software may not be included in any dataset used for training or improving
+//  machine learning algorithms, including but not limited to artificial intelligence,
+//  natural language processing, or data mining.
+//
+//  3. Any person or organization found to be in violation of these restrictions will be
+//  subject to legal action and may be held liable for any damages resulting from such use.
+//
+//  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+//  INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+//  PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+//  HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+//  CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR
+//  THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 //
 
 import Foundation
@@ -12,7 +43,7 @@ public final class AsyncSocketSequence<Message: Decodable & Sendable>: AsyncSequ
     
     public typealias AsyncIterator = AsyncThrowingStream<Message, Error>.Iterator
     
-    internal typealias Value = (connection: SocketConnection, result: Result<Message, Error>)
+    internal typealias Value = (connection: SocketConnection, result: Result<SocketMessage, Error>)
     
     private let continuationLock: Lock<AsyncThrowingStream<Message, Error>.Continuation?> = Lock(nil)
     
@@ -21,6 +52,8 @@ public final class AsyncSocketSequence<Message: Decodable & Sendable>: AsyncSequ
     private let stream: Lazy<AsyncThrowingStream<Message, Error>> = Lazy()
 
     private let id: UUID
+    
+    private let decoder = JSONDecoder()
     
     internal init(connection: SocketConnection, ignoringDecodeError: Bool? = nil) {
         self.id = UUID()
@@ -32,11 +65,7 @@ public final class AsyncSocketSequence<Message: Decodable & Sendable>: AsyncSequ
             
             return AsyncThrowingStream<Message, Error> { continuation in
                 self.continuationLock.set(continuation)
-                if let ignoreDecodeError {
-                    connection.receive(decodingType: Message.self, ignoringDecodeError: ignoreDecodeError)
-                } else {
-                    connection.receive()
-                }
+                connection.receiveAndPublish()
             }
         }
     }
@@ -51,17 +80,27 @@ public final class AsyncSocketSequence<Message: Decodable & Sendable>: AsyncSequ
             self.continuationLock.value?.finish()
             return
         }
-        
         continuationLock.modify { continuation in
             guard let continuation else { return }
             switch value.result {
             case .success(let message):
-                continuation.yield(message)
-                if let ignoreDecodeError {
-                    value.connection.receive(decodingType: Message.self, ignoringDecodeError: ignoreDecodeError)
+                if let ignoreDecodeError, (Message.self != SocketMessage.self) {
+                    do {
+                        let data = try decode(message, type: Message.self)
+                        continuation.yield(data)
+                    } catch {
+                        if !ignoreDecodeError {
+                            continuation.finish(throwing: error)
+                            return
+                        }
+                    }
+                } else if let socketMessage = message as? Message {
+                    continuation.yield(socketMessage)
                 } else {
-                    value.connection.receive()
+                    continuation.finish(throwing: SocketError.wsError(.init(domain: .WSDataDomain, code: .failedToDecode)))
+                    return
                 }
+                value.connection.receiveAndPublish()
             case .failure(let error):
                 continuation.finish(throwing: error)
             }
@@ -70,6 +109,16 @@ public final class AsyncSocketSequence<Message: Decodable & Sendable>: AsyncSequ
 
     deinit {
         end()
+    }
+    
+    private func decode<T: Decodable>(_ message: SocketMessage, type: T.Type) throws -> T {
+        switch message {
+        case .string(let string):
+            guard let data = string.data(using: .utf8) else { throw SocketError.wsError(.init(domain: .WSDataDomain, code: .failedToDecode)) }
+            return try decoder.decode(type, from: data)
+        case .data(let data):
+            return try decoder.decode(type, from: data)
+        }
     }
     
     public static func == (lhs: AsyncSocketSequence, rhs: AsyncSocketSequence) -> Bool {
