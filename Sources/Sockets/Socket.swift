@@ -51,7 +51,7 @@ public final class Socket: Sendable {
             allowInsecureConnections: Bool = false,
             allowPathMigration: Bool = true,
             tcpProtocolOptions: NWProtocolTCP.Options = NWProtocolTCP.Options(),
-            websocketProtocolOptions: NWProtocolWebSocket.Options = SocketConnection.defaultSocketOptions
+            websocketProtocolOptions: NWProtocolWebSocket.Options = NetworkSocketConnection.defaultSocketOptions
         ) {
             self.allowInsecureConnections = allowInsecureConnections
             self.allowPathMigration = allowPathMigration
@@ -61,20 +61,20 @@ public final class Socket: Sendable {
     }
     
     /// The current state of the socket connection
-    public var state: SocketConnection.State { connection.state }
+    public var state: ConnectionState { connection.state }
     
     /// The current closeCode of the socket connection. Defaults to `.noStatusReceived` if not closed.
     public var closeCode: CloseCode { connection.closeCode }
     
     /// The underlying socket connection.
-    internal let connection: SocketConnection
+    internal let connection: AsyncConnection
 
-    public init(url: URL, options: Options = Options(), debugNumber: Int? = nil) {
-        self.connection = SocketConnection(url: url, options: options, debugNumber: debugNumber)
+    public init(url: URL, options: Options = Options()) {
+        self.connection = NetworkSocketConnection(url: url, options: options)
     }
     
     public init?(host: String, port: Int, options: Options = Options()) {
-        guard let connection = SocketConnection(host: host, port: port, options: options) else { return nil }
+        guard let connection = NetworkSocketConnection(host: host, port: port, options: options) else { return nil }
         self.connection = connection
     }
     
@@ -119,7 +119,7 @@ public final class Socket: Sendable {
     ///     }
     ///
     public func messages() -> AsyncSocketSequence<SocketMessage> {
-        return connection.consumableSequence()
+        return connection.buildSequence()
     }
     
     /// An AsyncSequence of all messages received by the websocket, of type `SocketMessage`.
@@ -130,8 +130,8 @@ public final class Socket: Sendable {
     ///     for try await message in socket.messages {
     ///         print(message)
     ///     }
-    public func messages<T: Decodable & Sendable>(ofType type: T.Type, ignoringDecodeErrors: Bool = true) -> AsyncSocketSequence<T> {
-        return connection.consumableGenericSequence(ignoringFailure: ignoringDecodeErrors)
+    public func messages<T: Decodable & Sendable>(ofType type: T.Type) -> AsyncSocketSequence<T> {
+        return connection.buildSequence()
     }
     
     /// Close the socket connection gracefully and terminate all streams.
@@ -225,5 +225,18 @@ public final class Socket: Sendable {
             debugLog(error)
             throw error
         }
+    }
+}
+
+extension Socket {
+    
+    /// Sets a block of code to run when the socket state changes.
+    public func onStateChange(_ action: @Sendable @escaping (ConnectionState) -> Void) {
+        self.connection.onStateChange(action)
+    }
+    
+    /// Sets a block of code to run when the socket detects a better path, signalling a refresh is suggested.
+    public func onShouldRefresh(_ action: @Sendable @escaping () -> Void) {
+        self.connection.onShouldRefresh(action)
     }
 }

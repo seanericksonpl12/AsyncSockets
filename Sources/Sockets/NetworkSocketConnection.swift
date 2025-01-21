@@ -1,5 +1,5 @@
 //
-//  SocketConnection.swift
+//  NetworkSocketConnection.swift
 //
 //  Copyright (c) 2025, Sean Erickson
 //
@@ -39,22 +39,13 @@
 import Foundation
 import Network
 
-public final class SocketConnection: Sendable {
-    
-    /// A state representing the state of a SocketConnection
-    public enum State: Sendable {
-        case connecting
-        case connected
-        case disconnected
-    }
-    
-    public let debugNumber: Int?
-    
+public final class NetworkSocketConnection: AsyncConnection {
+            
     /// The current close code of the connection.
     public var closeCode: CloseCode { _closeCode.value }
     
     /// The current state of this SocketConnection.
-    public var state: State { _state.value }
+    public var state: ConnectionState { _state.value }
     
     /// Whether or not this connection is viable
     public var isViableConnection: Bool? { _isViableConnection.value }
@@ -87,7 +78,7 @@ public final class SocketConnection: Sendable {
     private let _closeCode: Lock<CloseCode> = Lock(CloseCode.protocolCode(.noStatusReceived))
     
     /// `state` mutable threadsafe storage
-    private let _state: Lock<State> = Lock(.disconnected)
+    private let _state: Lock<ConnectionState> = Lock(.disconnected)
     
     /// `isViableConnection` mutable threadsafe storage
     private let _isViableConnection: Lock<Bool?> = Lock(nil)
@@ -95,8 +86,14 @@ public final class SocketConnection: Sendable {
     /// `currentPath` mutable threadsafe storage
     private let _currentPath: Lock<NWPath?>
     
+    /// Action to run when the state updates
+    private let _onStateChange: Lock<@Sendable (ConnectionState) -> Void> = Lock({ _ in})
+    
+    /// Action to run when the state updates
+    private let _onShouldRefresh: Lock<@Sendable () -> Void> = Lock({})
+    
     /// A publisher for distributing received messages to all subscribers.  Allows any number of `AsyncSocketSequences` to run on the same connection.
-    private let publisher: Publisher<(connection: SocketConnection, result: Result<SocketMessage, Error>)> = Publisher()
+    private let publisher: Publisher<(connection: AsyncConnection, result: Result<SocketMessage, Error>)> = Publisher()
     
     /// JSONDecoder for decoding socket messages
     private let decoder = JSONDecoder()
@@ -116,8 +113,8 @@ public final class SocketConnection: Sendable {
     ///      - options: Additional options for the socket connection
     ///
     ///    - Returns: A new `SocketConnection`
-    convenience init(url: URL, options: Socket.Options, debugNumber: Int? = nil) {
-        self.init(endpoint: NWEndpoint.url(url), options: options, debugNumber: debugNumber)
+    convenience init(url: URL, options: Socket.Options) {
+        self.init(endpoint: NWEndpoint.url(url), options: options)
     }
     
     /// Initialize a new `SocketConnection` with the given host, port and options.  Returns nil if an invalid port is provided.
@@ -140,9 +137,8 @@ public final class SocketConnection: Sendable {
     ///      - options: Additional options for the socket connection
     ///
     ///    - Returns: A new `SocketConnection`
-    init(endpoint: NWEndpoint, options: Socket.Options, debugNumber: Int? = nil) {
+    init(endpoint: NWEndpoint, options: Socket.Options) {
         self.allowPathMigration = options.allowPathMigration
-        self.debugNumber = debugNumber
         self.parameters = NWParameters(tls: options.allowInsecureConnections ? nil : .init(), tcp: options.tcpProtocolOptions)
         self.parameters.defaultProtocolStack.applicationProtocols.insert(options.websocketProtocolOptions, at: 0)
         self.endpoint = endpoint
@@ -166,7 +162,7 @@ public final class SocketConnection: Sendable {
 }
 
 // MARK: - Socket APIs
-extension SocketConnection {
+extension NetworkSocketConnection {
     
     /// Connect to the current endpoint, returning once the connection is marked `ready` or throwing an error if marked otherwise.
     func connect() async throws {
@@ -381,21 +377,14 @@ extension SocketConnection {
 }
 
 // MARK: - Handlers
-extension SocketConnection {
+extension NetworkSocketConnection {
     
-    private func setState(for connection: NWConnection) {
-        self._state.modify { state in
-            switch connection.state {
-            case .setup, .preparing:
-                state = .connecting
-            case .waiting, .failed, .cancelled:
-                state = .disconnected
-            case .ready:
-                state = .connected
-            @unknown default:
-                state = .disconnected
-            }
-        }
+    func onStateChange(_ action: @Sendable @escaping (ConnectionState) -> Void) {
+        self._onStateChange.set(action)
+    }
+    
+    func onShouldRefresh(_ action: @Sendable @escaping () -> Void) {
+        self._onShouldRefresh.set(action)
     }
     
     private func setHandlers(for connection: NWConnection) {
@@ -462,6 +451,7 @@ extension SocketConnection {
                     continuation = nil
                 }
             }
+            _onStateChange.value(self.state)
         }
     }
     
@@ -469,6 +459,13 @@ extension SocketConnection {
         connection.pathUpdateHandler = { [weak self] path in
             guard let self else { return }
             self._currentPath.set(path)
+        }
+    }
+    
+    private func setBetterPathHandler(connection: NWConnection) {
+        connection.betterPathUpdateHandler = { [weak self] _ in
+            guard let self else { return }
+            self._onShouldRefresh.value()
         }
     }
     
@@ -516,7 +513,7 @@ extension SocketConnection {
 }
 
 // MARK: - Decode
-extension SocketConnection {
+extension NetworkSocketConnection {
     
     private func decode<T: Decodable>(_ message: SocketMessage, type: T.Type) throws -> T {
         switch message {
@@ -530,18 +527,11 @@ extension SocketConnection {
 }
 
 // MARK: - Sequences
-extension SocketConnection {
-    
-    /// Build a new `AsyncSocketSequence` that iterates socket messages
-    func consumableSequence() -> AsyncSocketSequence<SocketMessage> {
-        let stream = AsyncSocketSequence<SocketMessage>(connection: self)
-        self.publisher.addSubscriber(stream)
-        return stream
-    }
+extension NetworkSocketConnection {
     
     /// Build a new `AsyncSocketSequence` that iterates a given decodable type
-    func consumableGenericSequence<T: Decodable & Sendable>(ignoringFailure: Bool) -> AsyncSocketSequence<T> {
-        let stream = AsyncSocketSequence<T>(connection: self, ignoringDecodeError: ignoringFailure)
+    func buildSequence<T: Decodable & Sendable>() -> AsyncSocketSequence<T> {
+        let stream = AsyncSocketSequence<T>(connection: self)
         self.publisher.addSubscriber(stream)
         return stream
     }
