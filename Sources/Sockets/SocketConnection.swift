@@ -1,8 +1,39 @@
 //
 //  SocketConnection.swift
-//  AsyncSockets
 //
-//  Created by Sean Erickson on 1/10/25.
+//  Copyright (c) 2025, Sean Erickson
+//
+//  Permission is hereby granted, free of charge, to any person obtaining a copy of the
+//  software and associated documentation files (the "Software"), to deal in the Software
+//  without restriction, including without limitation the rights to use, copy, modify,
+//  merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+//  permit persons to whom the Software is furnished to do so, subject to the following
+//  conditions.
+//
+//  The above copyright notice and this permission notice shall be included in all copies
+//  or substantial portions of the Software.
+//
+//  In addition, the following restrictions apply:
+//
+//  1. The Software and any modifications made to it may not be used for the purpose of
+//  training or improving machine learning algorithms, including but not limited to
+//  artificial intelligence, natural language processing, or data mining. This condition
+//  applies to any derivatives, modifications, or updates based on the Software code. Any
+//  usage of the Software in an AI-training dataset is considered a breach of this License.
+//
+//  2. The Software may not be included in any dataset used for training or improving
+//  machine learning algorithms, including but not limited to artificial intelligence,
+//  natural language processing, or data mining.
+//
+//  3. Any person or organization found to be in violation of these restrictions will be
+//  subject to legal action and may be held liable for any damages resulting from such use.
+//
+//  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+//  INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+//  PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+//  HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+//  CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR
+//  THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 //
 
 import Foundation
@@ -10,6 +41,7 @@ import Network
 
 public final class SocketConnection: Sendable {
     
+    /// A state representing the state of a SocketConnection
     public enum State: Sendable {
         case connecting
         case migrating
@@ -17,75 +49,113 @@ public final class SocketConnection: Sendable {
         case disconnected
     }
     
+    public let debugNumber: Int?
+    
+    /// The current close code of the connection.
     public var closeCode: CloseCode { _closeCode.value }
     
+    /// The current state of this SocketConnection.
     public var state: State { _state.value }
     
+    /// Whether or not this connection is viable
     public var isViableConnection: Bool? { _isViableConnection.value }
     
+    /// The current path of the connection, nil if not connected
     public var currentPath: NWPath? { _currentPath.value }
     
+    /// The continuation for connecting, resumed successfully when the connection state is ready.
     private let connectionContinuation: Lock<CheckedContinuation<Void, Error>?> = Lock(nil)
     
+    /// The continuation for disconnecting, fulfilled successfully when the connection receives proper FIN/ACK messaging from the server
     private let disconnectionContinuation: Lock<CheckedContinuation<Void, Error>?> = Lock(nil)
     
+    /// Storage for all currently running `receive` tasks, for the purpose of transferring the tasks to a new connection upon migration.
+    private let receiveContinuations: Lock<[UUID: CheckedContinuation<SocketMessage, Error>]> = Lock([:])
+    
+    /// The underlying `NWConnection`
     private var connection: NWConnection { _connection.value }
     
+    /// A separate connection for sending messages - used as a temporary buffer when migrating
+    private var sendConnection: NWConnection { _sendConnection.value ?? _connection.value }
+    
+    /// The connection endpoing
     private let endpoint: NWEndpoint
     
+    /// The connection parameters
     private let parameters: NWParameters
     
+    /// Allow migration when a better path is detected - connection will immediately migrate to a better path when detected if `true`, else ignore the better path.
     private let allowPathMigration: Bool
     
+    /// Dispatch queue to connect to the connection on.
     private let queue = DispatchQueue(label: "NWSocketQueue")
     
+    /// `closeCode` mutable threadsafe storage
     private let _closeCode: Lock<CloseCode> = Lock(CloseCode.protocolCode(.noStatusReceived))
     
+    /// `state` mutable threadsafe storage
     private let _state: Lock<State> = Lock(.disconnected)
     
+    /// `isViableConnection` mutable threadsafe storage
     private let _isViableConnection: Lock<Bool?> = Lock(nil)
     
+    /// `currentPath` mutable threadsafe storage
     private let _currentPath: Lock<NWPath?>
     
+    /// `connection` mutable threadsafe storage
     private let _connection: Lock<NWConnection>
     
-    private let userDisconnected: Lock<Bool> = Lock(false)
+    /// `sendConnection` mutable threadsafe storage
+    private let _sendConnection: Lock<NWConnection?> = Lock(nil)
     
-    private let publisher: Publisher<AsyncSocketSequence<SocketMessage>> = Publisher()
+    /// A publisher for distributing received messages to all subscribers.  Allows any number of `AsyncSocketSequences` to run on the same connection.
+    private let publisher: Publisher<(connection: SocketConnection, result: Result<SocketMessage, Error>)> = Publisher()
     
-    private let genericPublishers: Lock<[String: AnySendable]> = Lock([:])
-    
-    private let report: Lock<NWConnection.PendingDataTransferReport?> = Lock(nil)
-    
+    /// JSONDecoder for decoding socket messages
     private let decoder = JSONDecoder()
     
+    /// Default options for the WebSocketProtocol:
+    ///     - `autoReplyPing: on`
     public static let defaultSocketOptions: WebSocketProtocolOptions = {
         let options = WebSocketProtocolOptions()
         options.autoReplyPing = true
         return options
     }()
     
-    convenience init(
-        url: URL,
-        options: Socket.Options
-    ) {
-        self.init(endpoint: NWEndpoint.url(url), options: options)
+    /// Initialize a new `SocketConnection` with the given URL and options.
+    ///
+    ///    - Parameters:
+    ///      - url: The url to use to create the connection
+    ///      - options: Additional options for the socket connection
+    ///
+    ///    - Returns: A new `SocketConnection`
+    convenience init(url: URL, options: Socket.Options, debugNumber: Int? = nil) {
+        self.init(endpoint: NWEndpoint.url(url), options: options, debugNumber: debugNumber)
     }
     
-    convenience init?(
-        host: String,
-        port: Int,
-        options: Socket.Options
-    ) {
+    /// Initialize a new `SocketConnection` with the given host, port and options.  Returns nil if an invalid port is provided.
+    ///
+    ///    - Parameters:
+    ///      - host: The host string for the connection
+    ///      - port: The port for the connection
+    ///      - options: Additional options for the socket connection
+    ///
+    ///    - Returns: A new `SocketConnection` if the port is valid, else `nil`
+    convenience init?(host: String, port: Int, options: Socket.Options) {
         guard let port = NWEndpoint.Port("\(port)") else { return nil }
         self.init(endpoint: NWEndpoint.hostPort(host: .init(host), port: port), options: options)
     }
     
-    init(
-        endpoint: NWEndpoint,
-        options: Socket.Options
-    ) {
+    /// Initialize a new `SocketConnection` with the given endpoing and options.
+    ///
+    ///    - Parameters:
+    ///      - endpoint: The endpoint for the connection
+    ///      - options: Additional options for the socket connection
+    ///
+    ///    - Returns: A new `SocketConnection`
+    init(endpoint: NWEndpoint, options: Socket.Options, debugNumber: Int? = nil) {
         self.allowPathMigration = options.allowPathMigration
+        self.debugNumber = debugNumber
         self.parameters = NWParameters(tls: options.allowInsecureConnections ? nil : .init(), tcp: options.tcpProtocolOptions)
         self.parameters.defaultProtocolStack.applicationProtocols.insert(options.websocketProtocolOptions, at: 0)
         self.endpoint = endpoint
@@ -94,8 +164,10 @@ public final class SocketConnection: Sendable {
         self.setHandlers(for: self.connection)
     }
     
+    /// clean up any active continuations.
     deinit {
         killAllStreams()
+        cancelMigration()
         self.connectionContinuation.modify { connectionContinuation in
             connectionContinuation?.resume()
             connectionContinuation = nil
@@ -107,8 +179,10 @@ public final class SocketConnection: Sendable {
     }
 }
 
+// MARK: - Socket APIs
 extension SocketConnection {
     
+    /// Connect to the current endpoint, returning once the connection is marked `ready` or throwing an error if marked otherwise.
     func connect() async throws {
         guard self.connection.state == .setup else {
             if self.connection.state != .ready {
@@ -139,17 +213,25 @@ extension SocketConnection {
     func close(withCode code: CloseCode?) {
         defer { killAllStreams() }
         guard self.state != .disconnected else { return }
+        if self.state == .migrating {
+            cancelMigration()
+        }
         
         // TODO: - Send correct close code info to server
         self.handleClose(closeCode: code ?? .protocolCode(.goingAway), reason: nil)
         self.connection.cancel()
     }
     
+    /// Close the conection and clean up any process / storage, waiting for the proper FIN/ACK messages before returning.
     func close(withCode code: CloseCode?) async throws {
         defer { killAllStreams() }
         
         guard self.state != .disconnected else {
             return
+        }
+        
+        if self.state == .migrating {
+            cancelMigration()
         }
         
         // TODO: - Send correct close code info to server
@@ -203,7 +285,7 @@ extension SocketConnection {
     }
     
     private func send(data: Data, context: Context) async throws {
-        guard self.state == .connected else {
+        guard self.state == .connected || self.state == .migrating else {
             throw SocketError.wsError(
                 .init(
                     domain: .WSConnectionDomain,
@@ -213,8 +295,10 @@ extension SocketConnection {
             )
         }
         
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            self.connection.send(
+        try await withCheckedThrowingContinuation { [weak self] (continuation: CheckedContinuation<Void, Error>) in
+            guard let self else { return }
+
+            self.sendConnection.send(
                 content: data,
                 contentContext: context,
                 isComplete: true,
@@ -241,58 +325,45 @@ extension SocketConnection {
     
     func receive() async throws -> SocketMessage {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<SocketMessage, Error>) in
+            let id = UUID()
+            self.receiveContinuations.modify { $0[id] = continuation }
             self.receive { [weak self] result in
                 guard let self else { return }
-                self.publisher.push((connection: self, result: result))
-                switch result {
-                case .success(let message):
-                    continuation.resume(returning: message)
-                case .failure(let error):
-                    continuation.resume(throwing: error)
+                self.receiveContinuations.modify { continuations in
+                    guard let continuation = continuations[id] else { return }
+                    self.publisher.push((connection: self, result: result))
+                    switch result {
+                    case .success(let message):
+                        continuation.resume(returning: message)
+                    case .failure(let error):
+                        continuation.resume(throwing: error)
+                    }
+                    continuations[id] = nil
                 }
             }
         }
     }
     
-    func receive<T: Decodable & Sendable>(decodingType: T.Type, ignoringDecodeError: Bool) {
-        self.receive { [weak self] result in
-            guard let self else { return }
-            
-            if let genericPublisher = self.getGenericPublishers(for: decodingType) {
-                switch result {
-                case .success(let message):
-                    do {
-                        genericPublisher.push(.success(try self.decode(message, type: decodingType)), from: self)
-                    } catch {
-                        if !ignoringDecodeError {
-                            genericPublisher.push(.failure(error), from: self)
-                        } else {
-                            receive(decodingType: decodingType, ignoringDecodeError: ignoringDecodeError)
-                        }
-                    }
-                case .failure(let error):
-                    genericPublisher.push(.failure(error), from: self)
-                }
-            }
-        }
-    }
-
-    func receive() {
+    /// Receive a value and publish it to all subscribers
+    func receiveAndPublish() {
         self.receive { [weak self] result in
             guard let self else { return }
             self.publisher.push((connection: self, result: result))
         }
     }
     
-    private func receive(completion: @escaping @Sendable (Result<SocketMessage, Error>) -> Void) {
-        guard self.state == .connected else {
+    /// Receive and parse a value directly from the provided connection.
+    private func receive(connection: NWConnection? = nil, completion: @escaping @Sendable (Result<SocketMessage, Error>) -> Void) {
+        guard self.state == .connected || self.state == .migrating else {
             completion(.failure(SocketError.wsError(.init(domain: .WSConnectionDomain, code: .socketNotConnected))))
             return
         }
         
-        self.connection.receiveMessage { [weak self] data, context, isComplete, error in
+        (connection ?? self.connection).receiveMessage { [weak self] data, context, isComplete, error in
+            guard let self else { return }
+
             if let error = SocketError(error) {
-                self?.handleError(error: error)
+                self.handleError(error: error)
                 completion(.failure(error))
                 return
             }
@@ -311,11 +382,11 @@ extension SocketConnection {
                 guard let data else { return }
                 completion(.success(.data(data)))
             case .close:
-                self?.handleClose(closeCode: metadata.closeCode, reason: data)
+                self.handleClose(closeCode: metadata.closeCode, reason: data)
             case .ping:
-                self?.handlePing()
+                self.handlePing()
             case .pong:
-                self?.handlePong()
+                self.handlePong()
             @unknown default:
                 fatalError()
             }
@@ -324,7 +395,7 @@ extension SocketConnection {
     }
     
     func ping() async throws {
-        guard self.state == .connected else { return }
+        guard self.state == .connected || self.state == .migrating else { return }
         guard let ping = "ping".data(using: .utf8) else { return }
         
         let context = Context(identifier: "pingContext", metadata: [WebSocketMetadata(opcode: .ping)])
@@ -336,6 +407,21 @@ extension SocketConnection {
 // MARK: - Handlers
 extension SocketConnection {
     
+    private func setState(for connection: NWConnection) {
+        self._state.modify { state in
+            switch connection.state {
+            case .setup, .preparing:
+                state = .connecting
+            case .waiting, .failed, .cancelled:
+                state = .disconnected
+            case .ready:
+                state = .connected
+            @unknown default:
+                state = .disconnected
+            }
+        }
+    }
+    
     private func setHandlers(for connection: NWConnection) {
         setStateHandler(connection: connection)
         setPathHandler(connection: connection)
@@ -345,7 +431,7 @@ extension SocketConnection {
     
     /// Set the state handler to update the shared state, and resume any non-nil continuations from either connect or disconnect
     private func setStateHandler(connection: NWConnection) {
-        self.connection.stateUpdateHandler = { [weak self] state in
+        connection.stateUpdateHandler = { [weak self] state in
             guard let self = self else { return }
             switch state {
             case .setup, .preparing:
@@ -405,20 +491,23 @@ extension SocketConnection {
     }
     
     private func setPathHandler(connection: NWConnection) {
-        self.connection.pathUpdateHandler = { [weak self] path in
+        connection.pathUpdateHandler = { [weak self] path in
             guard let self else { return }
             self._currentPath.set(path)
         }
     }
     
     private func setBetterPathHandler(connection: NWConnection) {
-        self.connection.betterPathUpdateHandler = { betterPathAvailable in
-            // TODO - Migration
+        connection.betterPathUpdateHandler = { [weak self] betterPathAvailable in
+            guard let self, self.allowPathMigration else { return }
+            if betterPathAvailable {
+                self.migrate()
+            }
         }
     }
     
     private func setViabilityHandler(connection: NWConnection) {
-        self.connection.viabilityUpdateHandler = { [weak self] isViable in
+        connection.viabilityUpdateHandler = { [weak self] isViable in
             guard let self else { return }
             self._isViableConnection.set(isViable)
         }
@@ -438,6 +527,7 @@ extension SocketConnection {
     }
     
     private func handleError(error: SocketError) {
+        print("handling \(error) for \(debugNumber)")
         switch error {
         case .nwError(let nwError):
             switch nwError {
@@ -477,44 +567,21 @@ extension SocketConnection {
 // MARK: - Sequences
 extension SocketConnection {
     
+    /// Build a new `AsyncSocketSequence` that iterates socket messages
     func consumableSequence() -> AsyncSocketSequence<SocketMessage> {
         let stream = AsyncSocketSequence<SocketMessage>(connection: self)
         self.publisher.addSubscriber(stream)
         return stream
     }
     
+    /// Build a new `AsyncSocketSequence` that iterates a given decodable type
     func consumableGenericSequence<T: Decodable & Sendable>(ignoringFailure: Bool) -> AsyncSocketSequence<T> {
         let stream = AsyncSocketSequence<T>(connection: self, ignoringDecodeError: ignoringFailure)
-        let publisher: GenericSequencePublisher<T> = getOrCreateGenericPublisher()
-        publisher.addSubscriber(stream)
+        self.publisher.addSubscriber(stream)
         return stream
     }
     
-    private func getOrCreateGenericPublisher<T: Decodable & Sendable>() -> GenericSequencePublisher<T> {
-        genericPublishers.unsafeLock()
-        defer { genericPublishers.unlock() }
-        
-        let key = String(describing: T.self)
-        if let publisher = genericPublishers.unsafeValue[key]?.value as? GenericSequencePublisher<T> {
-            return publisher
-        }
-        let publisher = GenericSequencePublisher<T>()
-        genericPublishers.unsafeValue[key] = AnySendable(value: publisher)
-        return publisher
-    }
-    
-    private func getGenericPublishers<T: Decodable & Sendable>(for type: T.Type) -> GenericSequencePublisher<T>? {
-        genericPublishers.unsafeLock()
-        defer { genericPublishers.unlock() }
-        
-        let key = String(describing: T.self)
-        if let publisher = genericPublishers.unsafeValue[key]?.value as? GenericSequencePublisher<T> {
-            return publisher
-        }
-        
-        return nil
-    }
-    
+    /// End all active sequences and clear the subscriber storage.
     func killAllStreams() {
         publisher.editSubscribers { streams in
             for stream in streams {
@@ -522,7 +589,91 @@ extension SocketConnection {
             }
             streams.removeAll()
         }
-        // kill all generic publishers
-        genericPublishers.set([:])
+    }
+}
+
+// MARK: - Migration
+extension SocketConnection {
+    
+    /// Migrate to a new connection.  Only call when a better path is detected.
+    func migrate() {
+        guard self.state == .connected else { return }
+        
+        let newConnection = NWConnection(to: self.endpoint, using: self.parameters)
+        // Swap send buffer
+        self._sendConnection.set(newConnection)
+        
+        newConnection.stateUpdateHandler = { [weak self] state in
+            guard let self = self else { return }
+            if state == .ready {
+                migrateReceiveTasks(with: newConnection)
+                migrateStreams(with: newConnection)
+                self._connection.modify { oldConnection in
+                    oldConnection.stateUpdateHandler = nil
+                    oldConnection.pathUpdateHandler = nil
+                    oldConnection.betterPathUpdateHandler = nil
+                    oldConnection.viabilityUpdateHandler = nil
+                    oldConnection.cancel()
+                    oldConnection = newConnection
+                }
+                self._sendConnection.set(nil)
+                self._state.set(.connected)
+                setHandlers(for: newConnection)
+            }
+        }
+        self._state.set(.migrating)
+        newConnection.start(queue: self.queue)
+    }
+    
+    /// Transfer outstanding `receive` continuations to a new connection and re-listen
+    private func migrateReceiveTasks(with newConnection: NWConnection) {
+        let receiveDictionary = self.receiveContinuations.value
+        
+        for key in receiveDictionary.keys {
+            var continuation: CheckedContinuation<SocketMessage, Error>?
+            self.receiveContinuations.modify { continuations in
+                continuation = continuations[key]
+                continuations[key] = nil
+            }
+            guard let continuation else { continue }
+            
+            self.receive(connection: newConnection) { [weak self] result in
+                guard let self else { return }
+                self.publisher.push((connection: self, result: result))
+                switch result {
+                case .success(let message):
+                    continuation.resume(returning: message)
+                case .failure(let error):
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+    
+    /// Transfer all active streams to a new connection, re-listening with the new connection.
+    private func migrateStreams(with newConnection: NWConnection) {
+        publisher.editSubscribers { subscribers in
+            for subscriber in subscribers {
+                self.receive(connection: newConnection) { [weak self] result in
+                    guard let self else { return }
+                    subscriber.didReceiveValue((connection: self, result: result))
+                }
+            }
+        }
+    }
+    
+    private func cancelMigration() {
+        self.receiveContinuations.modify { continuations in
+            for continuation in continuations.values {
+                continuation.resume(throwing: SocketError(CancellationError()))
+            }
+            continuations = [:]
+        }
+        self._sendConnection.modify { connection in
+            connection?.cancel()
+            connection = nil
+        }
+        
+        self.setState(for: connection)
     }
 }

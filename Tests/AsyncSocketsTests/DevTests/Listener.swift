@@ -35,7 +35,6 @@ class TestListener: @unchecked Sendable {
             }
             
             listener?.newConnectionHandler = { [weak self] connection in
-               
                 self?.handleNewConnection(connection)
             }
             
@@ -219,6 +218,7 @@ class TestListener: @unchecked Sendable {
         }
 
         frame.append(data)
+        
         connection.send(content: frame, completion: .contentProcessed { error in
             if let error = error {
                 print("Failed to send WebSocket message: \(error)")
