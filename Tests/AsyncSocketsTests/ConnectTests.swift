@@ -11,6 +11,19 @@ import Network
 
 final class ConnectTests: XCTestCase {
     
+    var server: Server!
+    
+    override func setUp() async throws {
+        try await super.setUp()
+        self.server = try Server(port: 8000)
+    }
+    
+    override func tearDown() async throws {
+        try await self.server.stop()
+        self.server = nil
+        try await super.tearDown()
+    }
+    
     func testConnectSuccessfulHostPort() async throws {
         guard let socket = Socket(host: "localhost", port: 8000, options: .init(allowInsecureConnections: true)) else {
             XCTFail("Invalid Socket!")
