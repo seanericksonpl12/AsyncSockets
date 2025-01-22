@@ -1,5 +1,5 @@
 //
-//  AsyncConnection.swift
+//  SocketMessage.swift
 //
 //  Copyright (c) 2025, Sean Erickson
 //
@@ -38,30 +38,12 @@
 
 import Foundation
 
-/// A state representing the state of a SocketConnection
-public enum ConnectionState: Sendable, Decodable {
-    case connecting
-    case connected
-    case disconnected
-}
-
-protocol AsyncConnection: Sendable, AnyObject {
-    var closeCode: CloseCode { get }
-    var state: ConnectionState { get }
+/// Message received from a SocketConnection, either as a `String` or binary `Data`
+public enum SocketMessage: Sendable, Decodable {
     
-    init(url: URL, options: Socket.Options)
-    init?(host: String, port: Int, options: Socket.Options)
+    /// A text message
+    case string(String)
     
-    func connect() async throws
-    func close(withCode code: CloseCode?) async throws
-    func close(withCode code: CloseCode?)
-    func receive() async throws -> SocketMessage
-    func receive<T: Decodable>(decodingType: T.Type) async throws -> T
-    func receiveAndPublish()
-    func send(_ text: String) async throws
-    func send(_ data: Data) async throws
-    func ping() async throws
-    func pong() async throws
-    func buildMessageSequence<T: Decodable & Sendable>() -> AsyncSocketSequence<T>
-    func buildEventSequence() -> AsyncEventSequence
+    /// A binary data message
+    case data(Data)
 }

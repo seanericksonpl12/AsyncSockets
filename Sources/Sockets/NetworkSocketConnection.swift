@@ -71,9 +71,6 @@ public final class NetworkSocketConnection: AsyncConnection {
     /// The connection parameters
     private let parameters: NWParameters
     
-    /// Allow migration when a better path is detected - connection will immediately migrate to a better path when detected if `true`, else ignore the better path.
-    private let allowPathMigration: Bool
-    
     /// Dispatch queue to connect to the connection on.
     private let queue = DispatchQueue(label: "NWSocketQueue")
     
@@ -89,14 +86,11 @@ public final class NetworkSocketConnection: AsyncConnection {
     /// `currentPath` mutable threadsafe storage
     private let _currentPath: Lock<NWPath?>
     
-    /// Action to run when the state updates
-    private let _onStateChange: Lock<@Sendable (ConnectionState) -> Void> = Lock({ _ in})
-    
-    /// Action to run when the state updates
-    private let _onShouldRefresh: Lock<@Sendable () -> Void> = Lock({})
-    
     /// A publisher for distributing received messages to all subscribers.  Allows any number of `AsyncSocketSequences` to run on the same connection.
     private let publisher: Publisher<(connection: AsyncConnection, result: Result<SocketMessage, Error>)> = Publisher()
+    
+    /// A publisher for distributing socket events to all subscribers.  Allows any number of `AsyncEventSequences` to listen for changes
+    private let eventPublisher: Publisher<SocketEvent> = Publisher()
     
     /// JSONDecoder for decoding socket messages
     private let decoder = JSONDecoder()
@@ -141,7 +135,6 @@ public final class NetworkSocketConnection: AsyncConnection {
     ///
     ///    - Returns: A new `SocketConnection`
     init(endpoint: NWEndpoint, options: Socket.Options) {
-        self.allowPathMigration = options.allowPathMigration
         self.parameters = NWParameters(tls: options.allowInsecureConnections ? nil : .init(), tcp: options.tcpProtocolOptions)
         self.parameters.defaultProtocolStack.applicationProtocols.insert(options.websocketProtocolOptions, at: 0)
         self.endpoint = endpoint
@@ -380,26 +373,27 @@ extension NetworkSocketConnection {
         }
     }
     
+    /// Send a ping to the socket
     func ping() async throws {
-        guard self.state == .connected else { return }
-        guard let ping = "ping".data(using: .utf8) else { return }
-        
+        guard self.state == .connected else { throw SocketError.wsError(.init(domain: .WSConnectionDomain, code: .socketNotConnected)) }
+        guard let ping = "ping".data(using: .utf8) else { throw SocketError.wsError(.init(domain: .WSDataDomain, code: .failedToEncode)) }
         let context = Context(identifier: "pingContext", metadata: [WebSocketMetadata(opcode: .ping)])
-        
         try await send(data: ping, context: context)
+    }
+    
+    /// Manually send a pong to the socket.
+    ///
+    /// - Note: unless specified in `Options`, this connection will auto-reply to pings with a pong already.
+    func pong() async throws {
+        guard self.state == .connected else {  throw SocketError.wsError(.init(domain: .WSConnectionDomain, code: .socketNotConnected)) }
+        guard let pong = "pong".data(using: .utf8) else { throw SocketError.wsError(.init(domain: .WSDataDomain, code: .failedToEncode)) }
+        let context = Context(identifier: "pingContext", metadata: [WebSocketMetadata(opcode: .pong)])
+        try await send(data: pong, context: context)
     }
 }
 
 // MARK: - Handlers
 extension NetworkSocketConnection {
-    
-    func onStateChange(_ action: @Sendable @escaping (ConnectionState) -> Void) {
-        self._onStateChange.set(action)
-    }
-    
-    func onShouldRefresh(_ action: @Sendable @escaping () -> Void) {
-        self._onShouldRefresh.set(action)
-    }
     
     private func setHandlers(for connection: NWConnection) {
         setStateHandler(connection: connection)
@@ -465,7 +459,7 @@ extension NetworkSocketConnection {
                     continuation = nil
                 }
             }
-            _onStateChange.value(self.state)
+            self.eventPublisher.push(.stateChanged(self.state))
         }
     }
     
@@ -479,7 +473,7 @@ extension NetworkSocketConnection {
     private func setBetterPathHandler(connection: NWConnection) {
         connection.betterPathUpdateHandler = { [weak self] _ in
             guard let self else { return }
-            self._onShouldRefresh.value()
+            self.eventPublisher.push(.shouldRefresh)
         }
     }
     
@@ -492,11 +486,11 @@ extension NetworkSocketConnection {
     
     // TODO: - Ping pong handling
     private func handlePing() {
-        print("socket got a ping!")
+        self.eventPublisher.push(.ping)
     }
     
     private func handlePong() {
-        print("socket got a pong!")
+        self.eventPublisher.push(.pong)
     }
     
     private func handleClose(closeCode: NWProtocolWebSocket.CloseCode, reason: Data?) {
@@ -544,9 +538,15 @@ extension NetworkSocketConnection {
 extension NetworkSocketConnection {
     
     /// Build a new `AsyncSocketSequence` that iterates a given decodable type
-    func buildSequence<T: Decodable & Sendable>() -> AsyncSocketSequence<T> {
+    func buildMessageSequence<T: Decodable & Sendable>() -> AsyncSocketSequence<T> {
         let stream = AsyncSocketSequence<T>(connection: self)
         self.publisher.addSubscriber(stream)
+        return stream
+    }
+    
+    func buildEventSequence() -> AsyncEventSequence {
+        let stream = AsyncEventSequence()
+        self.eventPublisher.addSubscriber(stream)
         return stream
     }
     

@@ -1,5 +1,5 @@
 //
-//  SocketMessage.swift
+//  SocketEvent.swift
 //
 //  Copyright (c) 2025, Sean Erickson
 //
@@ -36,10 +36,19 @@
 //  THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 //
 
-import Foundation
-
-/// Message received from a SocketConnection, either as a `String` or binary `Data`
-public enum SocketMessage: Sendable, Decodable {
-    case string(String)
-    case data(Data)
+/// An Enum representing all non-message related events within the socket
+public enum SocketEvent: Sendable {
+    
+    /// Indicates the state of the socket connection has changed
+    case stateChanged(ConnectionState)
+    
+    /// Indicates the socket has found a better path, and recommends reconnecting.  While recommended, receiving this
+    /// does not mean a refresh is necessary.
+    case shouldRefresh
+    
+    /// Indicates the socket has received a ping
+    case ping
+    
+    /// Indicates the socket has received a pong
+    case pong
 }
