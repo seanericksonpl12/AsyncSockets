@@ -87,7 +87,7 @@ public final class NetworkSocketConnection: AsyncConnection {
     private let _currentPath: Lock<NWPath?>
     
     /// A publisher for distributing received messages to all subscribers.  Allows any number of `AsyncSocketSequences` to run on the same connection.
-    private let publisher: Publisher<(connection: AsyncConnection, result: Result<SocketMessage, Error>)> = Publisher()
+    private let messagePublisher: Publisher<(connection: AsyncConnection, result: Result<SocketMessage, Error>)> = Publisher()
     
     /// A publisher for distributing socket events to all subscribers.  Allows any number of `AsyncEventSequences` to listen for changes
     private let eventPublisher: Publisher<SocketEvent> = Publisher()
@@ -145,21 +145,9 @@ public final class NetworkSocketConnection: AsyncConnection {
     
     /// clean up any active continuations.
     deinit {
-        killAllStreams()
-        self.connectionContinuation.modify { connectionContinuation in
-            connectionContinuation?.resume()
-            connectionContinuation = nil
-        }
-        self.disconnectionContinuation.modify { disconnectionContinuation in
-            disconnectionContinuation?.resume()
-            disconnectionContinuation = nil
-        }
-        self.receiveContinuations.modify { continuations in
-            for continuation in continuations.values {
-                continuation.resume(throwing: CancellationError())
-            }
-            continuations = [:]
-        }
+        killAllMessageStreams()
+        killAllEventStreams()
+        killAllContinuations()
     }
 }
 
@@ -195,7 +183,7 @@ extension NetworkSocketConnection {
     
     /// Close the conection and clean up any process / storage
     func close(withCode code: CloseCode?) {
-        defer { killAllStreams() }
+        defer { killAllMessageStreams() }
         guard self.state != .disconnected else { return }
         
         // TODO: - Send correct close code info to server
@@ -205,7 +193,7 @@ extension NetworkSocketConnection {
     
     /// Close the conection and clean up any process / storage, waiting for the proper FIN/ACK messages before returning.
     func close(withCode code: CloseCode?) async throws {
-        defer { killAllStreams() }
+        defer { killAllMessageStreams() }
         
         guard self.state != .disconnected else {
             return
@@ -309,7 +297,7 @@ extension NetworkSocketConnection {
                     continuation.resume(throwing: SocketError.wsError(.init(domain: .WSConnectionDomain, code: .connectionNotReady)))
                     return
                 }
-                self.publisher.push((connection: self, result: result))
+                self.messagePublisher.push((connection: self, result: result))
                 self.receiveContinuations.modify { continuations in
                     switch result {
                     case .success(let message):
@@ -327,7 +315,7 @@ extension NetworkSocketConnection {
     func receiveAndPublish() {
         self.receive { [weak self] result in
             guard let self else { return }
-            self.publisher.push((connection: self, result: result))
+            self.messagePublisher.push((connection: self, result: result))
         }
     }
     
@@ -532,6 +520,23 @@ extension NetworkSocketConnection {
             return try decoder.decode(type, from: data)
         }
     }
+    
+    private func killAllContinuations() {
+        self.connectionContinuation.modify { connectionContinuation in
+            connectionContinuation?.resume()
+            connectionContinuation = nil
+        }
+        self.disconnectionContinuation.modify { disconnectionContinuation in
+            disconnectionContinuation?.resume()
+            disconnectionContinuation = nil
+        }
+        self.receiveContinuations.modify { continuations in
+            for continuation in continuations.values {
+                continuation.resume(throwing: CancellationError())
+            }
+            continuations = [:]
+        }
+    }
 }
 
 // MARK: - Sequences
@@ -540,7 +545,7 @@ extension NetworkSocketConnection {
     /// Build a new `AsyncSocketSequence` that iterates a given decodable type
     func buildMessageSequence<T: Decodable & Sendable>() -> AsyncSocketSequence<T> {
         let stream = AsyncSocketSequence<T>(connection: self)
-        self.publisher.addSubscriber(stream)
+        self.messagePublisher.addSubscriber(stream)
         return stream
     }
     
@@ -551,8 +556,17 @@ extension NetworkSocketConnection {
     }
     
     /// End all active sequences and clear the subscriber storage.
-    func killAllStreams() {
-        publisher.editSubscribers { streams in
+    func killAllMessageStreams() {
+        messagePublisher.editSubscribers { streams in
+            for stream in streams {
+                stream.end()
+            }
+            streams.removeAll()
+        }
+    }
+    
+    func killAllEventStreams() {
+        eventPublisher.editSubscribers { streams in
             for stream in streams {
                 stream.end()
             }
