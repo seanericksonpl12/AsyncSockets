@@ -53,6 +53,9 @@ public final class NetworkSocketConnection: AsyncConnection {
     /// The current path of the connection, nil if not connected
     public var currentPath: NWPath? { _currentPath.value }
     
+    /// Storage for active receive tasks to avoid leaks
+    private let receiveContinuations: Lock<[UUID: CheckedContinuation<SocketMessage, Error>]> = Lock([:])
+    
     /// The continuation for connecting, resumed successfully when the connection state is ready.
     private let connectionContinuation: Lock<CheckedContinuation<Void, Error>?> = Lock(nil)
     
@@ -157,6 +160,12 @@ public final class NetworkSocketConnection: AsyncConnection {
         self.disconnectionContinuation.modify { disconnectionContinuation in
             disconnectionContinuation?.resume()
             disconnectionContinuation = nil
+        }
+        self.receiveContinuations.modify { continuations in
+            for continuation in continuations.values {
+                continuation.resume(throwing: CancellationError())
+            }
+            continuations = [:]
         }
     }
 }
@@ -300,17 +309,22 @@ extension NetworkSocketConnection {
     
     func receive() async throws -> SocketMessage {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<SocketMessage, Error>) in
+            let id = UUID()
+            self.receiveContinuations.modify { $0[id] = continuation }
             self.receive { [weak self] result in
                 guard let self else {
                     continuation.resume(throwing: SocketError.wsError(.init(domain: .WSConnectionDomain, code: .connectionNotReady)))
                     return
                 }
                 self.publisher.push((connection: self, result: result))
-                switch result {
-                case .success(let message):
-                    continuation.resume(returning: message)
-                case .failure(let error):
-                    continuation.resume(throwing: error)
+                self.receiveContinuations.modify { continuations in
+                    switch result {
+                    case .success(let message):
+                        continuations[id]?.resume(returning: message)
+                    case .failure(let error):
+                        continuations[id]?.resume(throwing: error)
+                    }
+                    continuations[id] = nil
                 }
             }
         }
@@ -478,11 +492,11 @@ extension NetworkSocketConnection {
     
     // TODO: - Ping pong handling
     private func handlePing() {
-        
+        print("socket got a ping!")
     }
     
     private func handlePong() {
-        
+        print("socket got a pong!")
     }
     
     private func handleClose(closeCode: NWProtocolWebSocket.CloseCode, reason: Data?) {
