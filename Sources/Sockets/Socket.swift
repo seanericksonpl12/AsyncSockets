@@ -41,20 +41,25 @@ import Foundation
 
 public final class Socket: Sendable {
     
+    /// Additional Options for a Socket.
     public struct Options {
+        
+        /// Allow the socket to connect with using TLS.  If true, TLS is disabled.  Default is `false`.
         public var allowInsecureConnections: Bool
-        public var allowPathMigration: Bool
+        
+        /// Additional TCP Protocol options, from the `Network` framework.
         public var tcpProtocolOptions: NWProtocolTCP.Options
+        
+        /// Additional WebSocket Protocol options, from the `Network` framework.
         public var websocketProtocolOptions: NWProtocolWebSocket.Options
         
+        /// Create a new Options object with the given options.
         public init(
             allowInsecureConnections: Bool = false,
-            allowPathMigration: Bool = true,
             tcpProtocolOptions: NWProtocolTCP.Options = NWProtocolTCP.Options(),
             websocketProtocolOptions: NWProtocolWebSocket.Options = NetworkSocketConnection.defaultSocketOptions
         ) {
             self.allowInsecureConnections = allowInsecureConnections
-            self.allowPathMigration = allowPathMigration
             self.tcpProtocolOptions = tcpProtocolOptions
             self.websocketProtocolOptions = websocketProtocolOptions
         }
@@ -69,10 +74,22 @@ public final class Socket: Sendable {
     /// The underlying socket connection.
     internal let connection: AsyncConnection
 
+    /// Creates a new `Socket` instance with the provided url and options.
+    ///
+    /// - Parameters:
+    ///    - url: The url of the socket connection.
+    ///    - options: Additional socket options to use, if provided.
     public init(url: URL, options: Options = Options()) {
         self.connection = NetworkSocketConnection(url: url, options: options)
     }
     
+    /// Creates a new `Socket` instance with the provided host, port and options if the port is valid,
+    /// else returns nil.
+    ///
+    /// - Parameters:
+    ///    - host: The host of the socket connection
+    ///    - port: The port of the socket connection.
+    ///    - options: Additional socket options to use, if provided.
     public init?(host: String, port: Int, options: Options = Options()) {
         guard let connection = NetworkSocketConnection(host: host, port: port, options: options) else { return nil }
         self.connection = connection
@@ -100,38 +117,93 @@ public final class Socket: Sendable {
         try await self.connection.receive()
     }
     
+    /// Receive a single message from the socket of a given decodable type.
+    ///
+    /// Receive will wait until it receives a message from the server that can be decoded into the provided type, or the
+    /// socket connection is severed.  The message received will still be parsed by any active `SocketSequence`
+    /// as well.
+    ///
+    /// This function will only return objects that are successfully decoded as the given type - meaning that if a message
+    /// fails to be decoded as the given type, **No Error Will Be Thrown, and Receive Will Continue Waiting**. If
+    /// you want receive to return the first message received, decoded or not, you can use the other `receive()` func
+    /// and manually decode socket messages.
+    ///
+    /// - Parameter type: The type to decode the received message to.
+    ///
+    /// - Throws: An error of type `SocketError` if the socket encounters an error while listening.
+    ///
+    /// - Returns: An object returned from the socket, of the type provided.
     public func receive<T: Decodable>(type: T.Type = T.self) async throws -> T {
         try await self.connection.receive(decodingType: type)
     }
 
-    /// An AsyncSequence of all messages received by the websocket, of type `SocketMessage`.
+    /// An AsyncSequence of all messages received by the websocket.
+    ///
+    /// This sequence will return all messages received by the websocket as type `SocketMessage`.  If you
+    /// want to listen for only messages of a certain `Decodable` type, try the `messages(ofType:)`
+    /// function.
+    ///
+    /// - Note: Pings and Pongs will not be received by this sequence.  They are considered a `SocketEvent`
+    /// and can be streamed from `AsyncEventSequence`, returned by the `events()` function.
     ///
     /// Example:
     ///
-    ///     for try await message in socket.messages() {
+    ///     for try await message in socket.messages(ofType: ExpectedResponse.self) {
     ///         switch message {
-    ///         case .string(let message):
-    ///             print(message)
+    ///         case .string(let str):
+    ///             print("received type string: \(str)")
     ///         case .data(let data):
-    ///             // handle Data obj
-    ///             break
+    ///             print("received type data of size \(data)")
     ///         }
     ///     }
     ///
+    /// - Returns: An AsyncSocketSequence that streams `SocketMessage`s.
     public func messages() -> AsyncSocketSequence<SocketMessage> {
-        return connection.buildSequence()
+        return connection.buildMessageSequence()
     }
     
-    /// An AsyncSequence of all messages received by the websocket, of type `SocketMessage`.
+    /// A convenience AsyncSequence of all messages received by the websocket, of a given `Decodable` type.
     ///
-    /// This sequence
+    /// This sequence will only return objects that are successfully decoded as the given type - meaning that if a
+    /// message fails to be decoded as the given type, **No Error Will Be Thrown, and No Message Will be
+    /// Delivered**. If you need to receive all messages or want to know when a message fails decoding, you
+    /// must use the `messages()` func and manually decode socket messages.
+    ///
     /// Example:
     ///
-    ///     for try await message in socket.messages {
-    ///         print(message)
+    ///     struct ExpectedResponse: Decodable {
+    ///         let value: Int
+    ///         let name: String
     ///     }
+    ///
+    ///     for try await response in socket.messages(ofType: ExpectedResponse.self) {
+    ///         print("received \(response.name) of value \(response.value)")
+    ///     }
+    ///
+    /// - Parameter ofType: The `Decodable` & `Sendable` type that AsyncSockets will use to decode
+    /// messages.
+    ///
+    /// - Returns: An AsyncSocketSequence that streams the given object type provided.
     public func messages<T: Decodable & Sendable>(ofType type: T.Type) -> AsyncSocketSequence<T> {
-        return connection.buildSequence()
+        return connection.buildMessageSequence()
+    }
+    
+    /// An AsyncSequence of all events that occur on the websocket.
+    ///
+    /// This sequence will not throw or end until either `.end()` is called or the sequence is deallocated.
+    ///
+    /// Example:
+    ///
+    ///     for try await response in socket.messages(ofType: ExpectedResponse.self) {
+    ///         print("received \(response.name) of value \(response.value)")
+    ///     }
+    ///
+    /// - Parameter ofType: The `Decodable` & `Sendable` type that AsyncSockets will use to decode
+    /// messages.
+    ///
+    /// - Returns: An AsyncSocketSequence that streams the given object type provided.
+    public func events() -> AsyncEventSequence {
+        return connection.buildEventSequence()
     }
     
     /// Close the socket connection gracefully and terminate all streams.
@@ -158,12 +230,7 @@ public final class Socket: Sendable {
     ///
     /// - Parameter withCode: The close code to send the server, uses `.goingAway` if nil.
     public func close(withCode closeCode: CloseCode? = nil) async throws {
-        do {
-            try await self.connection.close(withCode: closeCode)
-        } catch {
-            debugLog(error)
-            throw error
-        }
+        try await self.connection.close(withCode: closeCode)
     }
     
     /// Send a string through the websocket.
@@ -179,12 +246,7 @@ public final class Socket: Sendable {
     ///
     /// - Throws: An error of type `SocketError` if the connection is not ready, or the connection fails to process the data
     public func send(_ text: String) async throws {
-        do {
-            try await self.connection.send(text)
-        } catch {
-            debugLog(error)
-            throw error
-        }
+        try await self.connection.send(text)
     }
     
     /// Sends data through the websocket.
@@ -200,12 +262,7 @@ public final class Socket: Sendable {
     ///
     /// - Throws: An error of type `SocketError` if the connection is not ready, or the connection fails to process the data
     public func send(_ data: Data) async throws {
-        do {
-            try await self.connection.send(data)
-        } catch {
-            debugLog(error)
-            throw error
-        }
+        try await self.connection.send(data)
     }
     
     /// Sends a ping through the websocket.
@@ -219,24 +276,23 @@ public final class Socket: Sendable {
     ///
     /// - Throws: An error of type `SocketError` if the connection is not ready, or the connection fails to process the data
     public func ping() async throws {
-        do {
         try await self.connection.ping()
-        } catch {
-            debugLog(error)
-            throw error
-        }
-    }
-}
-
-extension Socket {
-    
-    /// Sets a block of code to run when the socket state changes.
-    public func onStateChange(_ action: @Sendable @escaping (ConnectionState) -> Void) {
-        self.connection.onStateChange(action)
     }
     
-    /// Sets a block of code to run when the socket detects a better path, signalling a refresh is suggested.
-    public func onShouldRefresh(_ action: @Sendable @escaping () -> Void) {
-        self.connection.onShouldRefresh(action)
+    /// Sends a pong through the websocket.
+    ///
+    /// This function will return once the data is either successfully processed by the connection or fails to send - not necessarily
+    /// once it is sent over the connection.
+    ///
+    /// From the `Network` module:
+    /// *Note that this does not guarantee that the data was sent out over the network, or acknowledge, but only that it has been
+    /// consumed by the protocol stack*
+    ///
+    /// - Note: Unless specified in `Options`, this socket will auto-reply to any pings with a pong, and calling this function
+    /// would not be necessary.
+    ///
+    /// - Throws: An error of type `SocketError` if the connection is not ready, or the connection fails to process the data
+    public func pong() async throws {
+        try await self.connection.pong()
     }
 }

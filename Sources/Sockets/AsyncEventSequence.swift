@@ -1,5 +1,5 @@
 //
-//  AsyncConnection.swift
+//  AsyncEventSequence.swift
 //
 //  Copyright (c) 2025, Sean Erickson
 //
@@ -38,30 +38,61 @@
 
 import Foundation
 
-/// A state representing the state of a SocketConnection
-public enum ConnectionState: Sendable, Decodable {
-    case connecting
-    case connected
-    case disconnected
+public final class AsyncEventSequence: AsyncSequence, Subscriber, Sendable {
+    
+    public typealias AsyncIterator = AsyncStream<SocketEvent>.Iterator
+    
+    internal typealias Value = SocketEvent
+    
+    private let continuationLock: Lock<AsyncStream<SocketEvent>.Continuation?> = Lock(nil)
+    
+    private let stream: Lazy<AsyncStream<SocketEvent>> = Lazy()
+
+    private let id: UUID
+    
+    internal init() {
+        self.id = UUID()
+        self.stream.set { [weak self] in
+            guard let self else {
+                return AsyncStream<SocketEvent> { $0.finish() }
+            }
+            
+            return AsyncStream<SocketEvent> { continuation in
+                self.continuationLock.set(continuation)
+            }
+        }
+    }
+    
+    internal func didReceiveValue(_ value: Value) {
+        continuationLock.modify { continuation in
+            guard let continuation else { return }
+            continuation.yield(value)
+        }
+    }
+
+    deinit {
+        end()
+    }
+    
+    public static func == (lhs: AsyncEventSequence, rhs: AsyncEventSequence) -> Bool {
+        lhs.id == rhs.id
+    }
+    
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
+    
+    public func makeAsyncIterator() -> AsyncIterator {
+        return stream.value.makeAsyncIterator()
+    }
+    
+    /// End the current stream
+    public func end() {
+        continuationLock.modify { continuation in
+            continuation?.finish()
+            continuation = nil
+        }
+    }
 }
 
-protocol AsyncConnection: Sendable, AnyObject {
-    var closeCode: CloseCode { get }
-    var state: ConnectionState { get }
-    
-    init(url: URL, options: Socket.Options)
-    init?(host: String, port: Int, options: Socket.Options)
-    
-    func connect() async throws
-    func close(withCode code: CloseCode?) async throws
-    func close(withCode code: CloseCode?)
-    func receive() async throws -> SocketMessage
-    func receive<T: Decodable>(decodingType: T.Type) async throws -> T
-    func receiveAndPublish()
-    func send(_ text: String) async throws
-    func send(_ data: Data) async throws
-    func ping() async throws
-    func pong() async throws
-    func buildMessageSequence<T: Decodable & Sendable>() -> AsyncSocketSequence<T>
-    func buildEventSequence() -> AsyncEventSequence
-}
+

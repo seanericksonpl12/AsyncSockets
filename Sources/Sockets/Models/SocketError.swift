@@ -77,6 +77,7 @@ public enum SocketError: Error {
         }
     }
     
+    /// The autocreated domain of this error, or nil if no matching domain could be built
     public var domain: SocketErrorDomain? {
         switch self {
         case .nwError(let nwError):
@@ -107,6 +108,7 @@ public enum SocketError: Error {
         }
     }
     
+    /// The autocreated error code of this error, or nil if no matching code could be built
     public var code: Int? {
         switch self {
         case .nwError(let nwError):
@@ -168,7 +170,7 @@ public struct WSError: Error, @unchecked Sendable {
         return description
     }
     
-    var codeString: String {
+    public var codeString: String {
         switch self.code {
         case .invalidConnectionAccess:
             "Attempting to connect while connect is already running"
@@ -189,7 +191,7 @@ public struct WSError: Error, @unchecked Sendable {
         }
     }
     
-    init(domain: WSErrorDomain, code: WSErrorCode, userInfo: [String : Any] = [:]) {
+    public init(domain: WSErrorDomain, code: WSErrorCode, userInfo: [String : Any] = [:]) {
         self.domain = domain
         self.code = code
         self.userInfo = userInfo
