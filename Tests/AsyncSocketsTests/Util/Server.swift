@@ -16,6 +16,14 @@ class Server: @unchecked Sendable {
     private var startContinuation: CheckedContinuation<Void, Error>?
     private var stopContinuation: CheckedContinuation<Void, Error>?
     private let listener: NWListener
+    private let queue = DispatchQueue(label: "com.asyncsockets.server")
+    private let messageQueue = DispatchQueue(label: "com.asyncsockets.server.messages", 
+                                          qos: .userInitiated,
+                                          attributes: .concurrent)
+    private let messageProcessingQueue = DispatchQueue(label: "com.asyncsockets.server.processing", 
+                                                     qos: .userInitiated)
+    private let sendQueue = DispatchQueue(label: "com.asyncsockets.server.send",
+                                        qos: .userInitiated)
     
     var state: NWListener.State
     
@@ -33,9 +41,12 @@ class Server: @unchecked Sendable {
                 return
             }
             startLock.withLock { self.startContinuation = continuation }
-            self.listener.start(queue: .main)
+            self.listener.start(queue: queue)
         }
         print("Listener started")
+        
+        // Add a small delay to ensure the server is fully ready
+        try await Task.sleep(nanoseconds: 100_000_000)  // 0.1 seconds
     }
     
     func stop() async throws {
@@ -50,6 +61,7 @@ class Server: @unchecked Sendable {
             return
         }
         guard self.state == .ready else { return }
+
         try await withCheckedThrowingContinuation { [weak self] (continuation: CheckedContinuation<Void, Error>) in
             guard let self else {
                 continuation.resume(throwing: CancellationError())
@@ -120,13 +132,15 @@ class Server: @unchecked Sendable {
     private func handleNewConnection(_ connection: NWConnection) {
         print("New connection received")
         
-        connection.stateUpdateHandler = { state in
+        connection.stateUpdateHandler = { [weak self] state in
+            guard let self = self else { return }
             switch state {
             case .ready:
                 print("Connection ready")
                 self.receiveHTTPHeaders(on: connection)
             case .failed(let error):
                 print("Connection failed with error: \(error)")
+                connection.cancel()
             case .cancelled:
                 print("Connection cancelled")
             default:
@@ -134,23 +148,24 @@ class Server: @unchecked Sendable {
             }
         }
         
-        connection.start(queue: .main)
+        connection.start(queue: messageQueue)
     }
     
     private func receiveHTTPHeaders(on connection: NWConnection) {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 1024) { data, context, isComplete, error in
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65535) { [weak self] data, context, isComplete, error in
+            guard let self = self else { return }
+            
+            if let error = error {
+                print("Receive error: \(error)")
+                connection.cancel()
+                return
+            }
             
             if let data = data, !data.isEmpty {
                 if let request = String(data: data, encoding: .utf8) {
                     print("Received HTTP request:\n\(request)")
                     self.handleHTTPRequest(request, on: connection)
                 }
-            }
-            
-            if let error = error {
-                print("Receive error: \(error)")
-                connection.cancel()
-                return
             }
         }
     }
@@ -174,14 +189,14 @@ class Server: @unchecked Sendable {
         
         print("Sending handshake response:\n\(response)")
         
-        connection.send(content: response.data(using: .utf8), completion: .contentProcessed { error in
+        connection.send(content: response.data(using: .utf8), completion: .contentProcessed { [weak self] error in
+            guard let self = self else { return }
             if let error = error {
                 print("Failed to send handshake response: \(error)")
                 connection.cancel()
             } else {
                 print("Handshake complete, ready to echo messages")
-                // self.handleWebSocketMessages(on: connection)
-                self.receiveWebSocketMessage(on: connection)
+                self.startContinuousReceive(on: connection)
             }
         })
     }
@@ -202,62 +217,86 @@ class Server: @unchecked Sendable {
         return Data(hash).base64EncodedString()
     }
     
-    func receiveWebSocketMessage(on connection: NWConnection) {
-        connection.receive(minimumIncompleteLength: 2, maximumLength: 1024) { data, context, isComplete, error in
-            guard let data = data, !data.isEmpty, let frame = SocketFrame(data) else {
-                if let error = error {
-                    print("Receive error: \(error)")
-                }
+    private func startContinuousReceive(on connection: NWConnection) {
+        guard connection.state == .ready else { return }
+        
+        // Use a serial queue for ordered processing
+        messageProcessingQueue.async { [weak self] in
+            self?.receiveWebSocketMessage(on: connection)
+        }
+    }
+    
+    private func receiveWebSocketMessage(on connection: NWConnection) {
+        guard connection.state == .ready else {
+            return
+        }
+        
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65535) { [weak self] data, context, isComplete, error in
+            guard let self = self else { return }
+            
+            if let error = error {
+                print("Receive error: \(error)")
+                connection.cancel()
                 return
             }
             
-            self.parseFrame(frame, connection: connection)
+            if let data = data, !data.isEmpty {
+                // Process message on the concurrent queue
+                self.messageQueue.async {
+                    if let frame = SocketFrame(data) {
+                        self.parseFrame(frame, connection: connection)
+                    }
+                }
+            }
+            
+            // Immediately start receiving the next message
+            if connection.state == .ready {
+                self.messageProcessingQueue.async {
+                    self.receiveWebSocketMessage(on: connection)
+                }
+            }
         }
     }
     
     func parseFrame(_ frame: SocketFrame, connection: NWConnection) {
-        if frame.fin {
-            print("Fin!")
-        }
-        print("Opcode received: \(frame.opcode)")
         let opcodeToSend = frame.opcode == .ping ? .pong : frame.opcode
-        let context = NWConnection.ContentContext(identifier: "serverContext", metadata: [NWProtocolWebSocket.Metadata(opcode: frame.opcode)])
+        let context = NWConnection.ContentContext(identifier: "serverContext", metadata: [NWProtocolWebSocket.Metadata(opcode: opcodeToSend)])
+        
         switch frame.opcode {
         case .cont:
-            print("still receiving, add data to buffer?")
+            break
         case .text:
-            print("received text")
-            self.sendWebSocketMessage(frame, with: context, on: connection)
+            sendQueue.async {
+                self.sendWebSocketMessage(frame, with: context, on: connection)
+            }
         case .binary:
-            print("received data")
-            self.sendWebSocketMessage(frame, with: context, on: connection)
+            sendQueue.async {
+                self.sendWebSocketMessage(frame, with: context, on: connection)
+            }
         case .close:
-            print("close connection")
             connection.cancel()
         case .ping:
-            print("send back pong")
-            self.sendWebSocketMessage(frame, with: context, on: connection)
+            sendQueue.async {
+                self.sendWebSocketMessage(frame, with: context, on: connection)
+            }
         case .pong:
-            print("do nothing, just pong")
+            print("server received pong")
         @unknown default:
             fatalError()
         }
-        self.receiveWebSocketMessage(on: connection)
     }
     
-    
-    
     func sendWebSocketMessage(_ data: SocketFrame, with context: NWConnection.ContentContext?, on connection: NWConnection) {
-        // WebSocket frame: text frame (0x1) with FIN bit set
-      //  var frame = Data([0x81]) // 0x81 = FIN + Text Frame
-        let opcodeToSend = data.opcode == .ping ? .pong : data.opcode
-        let frame = SocketFrame(opcode: opcodeToSend, payload: data.payload, mask: false)
+        guard connection.state == .ready else { return }
         
-        connection.send(content: frame.raw, contentContext: context ?? .defaultMessage, completion: .contentProcessed { error in
+        let opcodeToSend = data.opcode == .ping ? .pong : data.opcode
+        let payloadToSend = data.opcode == .ping ? "pong".data(using: .utf8) ?? data.payload : data.payload
+        let frame = SocketFrame(opcode: opcodeToSend, payload: payloadToSend, mask: false)
+        
+        connection.send(content: frame.raw, contentContext: context ?? .defaultMessage, completion: .contentProcessed { [weak self] error in
             if let error = error {
                 print("Failed to send WebSocket message: \(error)")
-            } else {
-                print("Sent WebSocket message: \(String(data: data.payload, encoding: .utf8))")
+                connection.cancel()
             }
         })
     }

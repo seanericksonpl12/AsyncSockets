@@ -9,10 +9,10 @@ import XCTest
 @testable import AsyncSockets
 import Network
 
-final class SendTests: XCTestCase {
+final class SendTests: AsyncSocketsTestCase {
     
     func testSendString() async throws {
-        let socket = Socket(url: URL(string: "ws://localhost:8000")!, options: .init(allowInsecureConnections: true))
+        let socket = Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         try await socket.connect()
         
         try await socket.send("Hello, World!")
@@ -21,7 +21,7 @@ final class SendTests: XCTestCase {
     }
     
     func testSendStringConcurrent() async throws {
-        let socket =  Socket(url: URL(string: "ws://localhost:8000")!, options: .init(allowInsecureConnections: true))
+        let socket = Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         try await socket.connect()
         
         let messages = (1...5).map { "Message \($0)" }
@@ -43,7 +43,7 @@ final class SendTests: XCTestCase {
     }
     
     func testSendData() async throws {
-        let socket = Socket(url: URL(string: "ws://localhost:8000")!, options: .init(allowInsecureConnections: true))
+        let socket = Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         try await socket.connect()
         
         // Test sending data
@@ -55,7 +55,7 @@ final class SendTests: XCTestCase {
     }
     
     func testSendDataConcurrent() async throws {
-        let socket = Socket(url: URL(string: "ws://localhost:8000")!, options: .init(allowInsecureConnections: true))
+        let socket = Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         try await socket.connect()
         
         // Send multiple data packets concurrently
@@ -78,7 +78,7 @@ final class SendTests: XCTestCase {
     }
     
     func testSendFailsWhenNotConnected() async {
-        let socket = Socket(url: URL(string: "ws://localhost:8000")!, options: .init(allowInsecureConnections: true))
+        let socket = Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         // Try to send without connecting
         do {
             try await socket.send("Test message")
@@ -98,7 +98,7 @@ final class SendTests: XCTestCase {
     }
     
     func testSendFailsWhenNotConnectedConcurrent() async {
-        let socket =  Socket(url: URL(string: "ws://localhost:8000")!, options: .init(allowInsecureConnections: true))
+        let socket = Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         
         // Try multiple sends concurrently without connecting
         await withThrowingTaskGroup(of: Void.self) { group in
@@ -127,11 +127,11 @@ final class SendTests: XCTestCase {
         try? await socket.close()
     }
     
-    func testSendFailsAfterClose() async {
-        let socket = Socket(url: URL(string: "ws://localhost:8000")!, options: .init(allowInsecureConnections: true))
+    func testSendFailsAfterClose() async throws {
+        let socket = Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         
-        try? await socket.connect()
-        try? await socket.close()
+        try await socket.connect()
+        try await socket.close()
         
         do {
             try await socket.send("Test message")
@@ -150,10 +150,10 @@ final class SendTests: XCTestCase {
         }
     }
     
-    func testSendFailsAfterCloseConcurrent() async {
-        let socket = Socket(url: URL(string: "ws://localhost:8000")!, options: .init(allowInsecureConnections: true))
-        try? await socket.connect()
-        try? await socket.close()
+    func testSendFailsAfterCloseConcurrent() async throws {
+        let socket = Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
+        try await socket.connect()
+        try await socket.close()
         
         // Try multiple sends concurrently after closing
         await withThrowingTaskGroup(of: Void.self) { group in
@@ -180,7 +180,7 @@ final class SendTests: XCTestCase {
     }
     
     func testPing() async throws {
-        let socket = Socket(url: URL(string: "ws://localhost:8000")!, options: .init(allowInsecureConnections: true))
+        let socket = Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         
         try await socket.connect()
         
@@ -191,7 +191,7 @@ final class SendTests: XCTestCase {
     }
     
     func testPingConcurrent() async throws {
-        let socket = Socket(url: URL(string: "ws://localhost:8000")!, options: .init(allowInsecureConnections: true))
+        let socket = Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         try await socket.connect()
         
         // Send multiple pings concurrently

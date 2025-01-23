@@ -50,7 +50,7 @@ protocol AsyncConnection: Sendable, AnyObject {
     var state: ConnectionState { get }
     
     init(url: URL, options: Socket.Options)
-    init?(host: String, port: Int, options: Socket.Options)
+    init(host: String, port: UInt16, options: Socket.Options)
     
     func connect() async throws
     func close(withCode code: CloseCode?) async throws

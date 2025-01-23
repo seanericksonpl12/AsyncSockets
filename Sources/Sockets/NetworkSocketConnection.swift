@@ -122,9 +122,8 @@ public final class NetworkSocketConnection: AsyncConnection {
     ///      - options: Additional options for the socket connection
     ///
     ///    - Returns: A new `SocketConnection` if the port is valid, else `nil`
-    convenience init?(host: String, port: Int, options: Socket.Options) {
-        guard let port = NWEndpoint.Port("\(port)") else { return nil }
-        self.init(endpoint: NWEndpoint.hostPort(host: .init(host), port: port), options: options)
+    convenience init(host: String, port: UInt16, options: Socket.Options) {
+        self.init(endpoint: NWEndpoint.hostPort(host: .init(host), port: NWEndpoint.Port(integerLiteral: port)), options: options)
     }
     
     /// Initialize a new `SocketConnection` with the given endpoing and options.
