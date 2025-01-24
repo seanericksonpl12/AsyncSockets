@@ -47,7 +47,6 @@ final class ReceiveTests: AsyncSocketsTestCase {
         activeTasks.append(Task {
             try await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second delay
             for i in 1...messageCount {
-                try await Task.sleep(nanoseconds: 100_000_000)
                 try await socket.send("Message \(i)")
                 print("sent \(i)")
             }
@@ -120,7 +119,6 @@ final class ReceiveTests: AsyncSocketsTestCase {
         activeTasks.append(Task {
             try await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second delay
             for i in 1...messageCount {
-                try await Task.sleep(nanoseconds: 100_000_000)
                 let message = TestMessage(id: i, text: "Message \(i)")
                 let data = try JSONEncoder().encode(message)
                 print("sending \(i)")
@@ -163,7 +161,6 @@ final class ReceiveTests: AsyncSocketsTestCase {
         // Create a task to simulate sending multiple messages
         activeTasks.append(Task {
             for i in 1...messageCount {
-                try await Task.sleep(nanoseconds: 100_000_000)
                 try? await socket.send("Message \(i)")
             }
         })
@@ -205,7 +202,6 @@ final class ReceiveTests: AsyncSocketsTestCase {
         activeTasks.append(Task {
             for i in 0..<3 {
                 for j in 0..<3 {
-                    try await Task.sleep(nanoseconds: 100_000_000)
                     try? await sockets[j].send("\(i):\(j)")
                 }
             }
@@ -260,7 +256,6 @@ final class ReceiveTests: AsyncSocketsTestCase {
         activeTasks.append(Task {
             try await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second delay
             for i in 0..<messageCount {
-                try await Task.sleep(nanoseconds: 100_000_000)
                 let message = TestMessage(id: i, text: "Message \(i)")
                 let data = try? JSONEncoder().encode(message)
                 try? await socket.send(data!)
