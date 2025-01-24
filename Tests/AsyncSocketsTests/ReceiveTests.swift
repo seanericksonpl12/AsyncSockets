@@ -17,8 +17,8 @@ final class ReceiveTests: AsyncSocketsTestCase {
         
         // Create a task to simulate receiving a message
         activeTasks.append(Task {
-            try? await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second delay
-            try? await socket.send("Test Message")
+            try await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second delay
+            try await socket.send("Test Message")
         })
         
         // Test receiving a message
@@ -75,7 +75,6 @@ final class ReceiveTests: AsyncSocketsTestCase {
         
         // Clean up
         try await socket.close()
-        print("test done.")
     }
     
     func testReceiveDecodable() async throws {
@@ -92,8 +91,8 @@ final class ReceiveTests: AsyncSocketsTestCase {
         
         // Create a task to simulate receiving a message
         activeTasks.append(Task {
-            try? await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second delay
-            try? await socket.send(jsonData)
+            try await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second delay
+            try await socket.send(jsonData)
         })
         
         // Test receiving a decoded message
@@ -102,7 +101,7 @@ final class ReceiveTests: AsyncSocketsTestCase {
         XCTAssertEqual(received.id, testMessage.id)
         
         // Clean up
-        try? await socket.close()
+        try await socket.close()
     }
     
     func testReceiveDecodableConcurrent() async throws {
@@ -206,6 +205,7 @@ final class ReceiveTests: AsyncSocketsTestCase {
         activeTasks.append(Task {
             for i in 0..<3 {
                 for j in 0..<3 {
+                    try await Task.sleep(nanoseconds: 100_000_000)
                     try? await sockets[j].send("\(i):\(j)")
                 }
             }
@@ -215,7 +215,7 @@ final class ReceiveTests: AsyncSocketsTestCase {
             for i in 0..<3 {
                 var count = 0
                 group.addTask {
-                    for try await message in  sockets[i].messages() {
+                    for try await message in sockets[i].messages() {
                         guard case let .string(str) = message else {
                             return
                         }

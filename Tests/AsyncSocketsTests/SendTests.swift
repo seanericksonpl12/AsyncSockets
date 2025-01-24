@@ -151,31 +151,37 @@ final class SendTests: AsyncSocketsTestCase {
     }
     
     func testSendFailsAfterCloseConcurrent() async throws {
-        let socket = Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
-        try await socket.connect()
-        try await socket.close()
         
-        // Try multiple sends concurrently after closing
-        await withThrowingTaskGroup(of: Void.self) { group in
-            for i in 1...5 {
-                group.addTask {
-                    do {
-                        try await socket.send("Test message \(i)")
-                        XCTFail("Expected send to fail after close")
-                    } catch {
-                        XCTAssertTrue(error is SocketError)
-                        if let socketError = error as? SocketError {
-                            switch socketError {
-                            case .wsError(let error):
-                                XCTAssertEqual(error.domain, .WSConnectionDomain)
-                                XCTAssertEqual(error.code, .socketNotConnected)
-                            default:
-                                XCTFail("Unexpected error type")
+            let socket = Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
+        do {
+            try await socket.connect()
+            try await socket.close()
+            print("closed")
+            // Try multiple sends concurrently after closing
+            await withThrowingTaskGroup(of: Void.self) { group in
+                for i in 1...5 {
+                    group.addTask {
+                        do {
+                            try await socket.send("Test message \(i)")
+                            XCTFail("Expected send to fail after close")
+                        } catch {
+                            XCTAssertTrue(error is SocketError)
+                            if let socketError = error as? SocketError {
+                                switch socketError {
+                                case .wsError(let error):
+                                    XCTAssertEqual(error.domain, .WSConnectionDomain)
+                                    XCTAssertEqual(error.code, .socketNotConnected)
+                                default:
+                                    XCTFail("Unexpected error type")
+                                }
                             }
                         }
                     }
                 }
             }
+        } catch {
+            print(error)
+            XCTFail()
         }
     }
     

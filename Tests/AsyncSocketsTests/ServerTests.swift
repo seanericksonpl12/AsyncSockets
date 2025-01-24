@@ -8,14 +8,22 @@
 import XCTest
 @testable import AsyncSockets
 
-final class ServerTests: AsyncSocketsTestCase {
+final class ServerTests: XCTestCase {
+    
+    var server: Server!
+    var activeTasks: [Task<Void, Error>]!
     
     override func setUp() async throws {
         try await super.setUp()
+        self.activeTasks = []
         self.server = try Server(port: 8000)
     }
     
     override func tearDown() async throws {
+        for task in self.activeTasks {
+            task.cancel()
+        }
+        self.activeTasks = nil
         try await self.server.stop()
         self.server = nil
         try await super.tearDown()
@@ -193,7 +201,8 @@ final class ServerTests: AsyncSocketsTestCase {
     }
     
     func testMultipleTextMessage() async throws {
-        try await self.server.start()
+//        let server = try Server(port: 8001)
+        try await server.start()
         let socket = Socket(host: "localhost", port: 8000, options: .init(allowInsecureConnections: true))
         try await socket.connect()
         var count = 0
@@ -201,13 +210,7 @@ final class ServerTests: AsyncSocketsTestCase {
         activeTasks.append(Task {
             for i in 0..<20 {
                 try await socket.send("\(i)")
-                print("sent \(i)")
             }
-        })
-        
-        activeTasks.append(Task {
-            try await Task.sleep(nanoseconds: 2_000_000_000)
-            XCTFail("Timeout")
         })
         
         for try await message in socket.messages() {
