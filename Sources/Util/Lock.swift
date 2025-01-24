@@ -38,17 +38,46 @@
 
 import Foundation
 
-final class Lock<Value: Sendable>: @unchecked Sendable {
-    private let _lock = NSLock()
-    private var _value: Value
-    private var onDeinit: (Value) -> Void = { _ in }
+final class Lock<Value>: Sendable where Value: Sendable {
+    
+    #if os(macOS) || os(iOS) || os(tvOS) || os(watchOS)
+    private nonisolated(unsafe) var _oslock = os_unfair_lock_s()
+
+    @inline(__always)
+    private func _lock() {
+        os_unfair_lock_lock(&_oslock)
+    }
+
+    @inline(__always)
+    private func _unlock() {
+        os_unfair_lock_unlock(&_oslock)
+    }
+    #else
+    private let _nslock = NSLock()
+
+    @inline(__always)
+    private func _lock() {
+        _nslock.lock()
+    }
+
+    @inline(__always)
+    private func _unlock() {
+        _nslock.unlock()
+    }
+    #endif
+    
+    private nonisolated(unsafe) var _value: Value
+    private let onDeinit: @Sendable (Value) -> Void
     
     deinit {
         onDeinit(_value)
     }
     
     var value: Value {
-        _lock.withLock { _value }
+        _lock()
+        defer { _unlock() }
+        
+        return _value
     }
     
     var unsafeValue: Value {
@@ -61,22 +90,34 @@ final class Lock<Value: Sendable>: @unchecked Sendable {
     }
     
     func unsafeLock() {
-        _lock.lock()
+        _lock()
     }
     
     func unlock() {
-        _lock.unlock()
+        _unlock()
     }
     
     func set(_ newValue: Value) {
-        _lock.withLock { _value = newValue }
+        _lock()
+        defer { _unlock() }
+        
+         _value = newValue
     }
     
-    func modify(_ transform: (inout Value) -> Void) {
-        _lock.withLock { transform(&_value) }
+    func modify<T>(_ transform: (inout Value) -> T) -> T {
+        _lock()
+        defer { _unlock() }
+        
+        return transform(&_value)
     }
     
     init(_ value: Value) {
         self._value = value
+        self.onDeinit = { _ in }
+    }
+    
+    init(_ value: Value, onDeinit: @Sendable @escaping (Value) -> Void) {
+        self._value = value
+        self.onDeinit = onDeinit
     }
 }

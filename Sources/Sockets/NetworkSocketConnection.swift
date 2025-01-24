@@ -40,7 +40,7 @@ import Foundation
 import Network
 
 public final class NetworkSocketConnection: AsyncConnection {
-            
+    
     /// The current close code of the connection.
     public var closeCode: CloseCode { _closeCode.value }
     
@@ -60,7 +60,9 @@ public final class NetworkSocketConnection: AsyncConnection {
     private let connectionContinuation: Lock<CheckedContinuation<Void, Error>?> = Lock(nil)
     
     /// The continuation for disconnecting, fulfilled successfully when the connection receives proper FIN/ACK messaging from the server
-    private let disconnectionContinuation: Lock<CheckedContinuation<Void, Error>?> = Lock(nil)
+    let disconnectionContinuation: Lock<CheckedContinuation<Void, Error>?> = Lock(nil)
+    
+    private let connectionStatusContinuation: Lock<(connect: CheckedContinuation<Void, Error>?, disconnect: CheckedContinuation<Void, Error>?)> = Lock((connect: nil, disconnect: nil))
     
     /// The underlying `NWConnection`
     private let connection: NWConnection
@@ -168,15 +170,14 @@ extension NetworkSocketConnection {
                 return
             }
             
-            self.connectionContinuation.unsafeLock()
-            guard self.connectionContinuation.unsafeValue == nil else {
-                continuation.resume(throwing: SocketError.wsError(.init(domain: .WSConnectionDomain, code: .invalidConnectionAccess)))
-                self.connectionContinuation.unlock()
-                return
+            self.connectionStatusContinuation.modify { existing in
+                guard existing.connect == nil else {
+                    continuation.resume(throwing: SocketError.wsError(.init(domain: .WSConnectionDomain, code: .invalidConnectionAccess)))
+                    return
+                }
+                existing.connect = continuation
+                self.connection.start(queue: self.queue)
             }
-            self.connectionContinuation.unsafeValue = continuation
-            self.connectionContinuation.unlock()
-            self.connection.start(queue: self.queue)
         }
     }
     
@@ -212,16 +213,14 @@ extension NetworkSocketConnection {
                 return
             }
             
-            self.disconnectionContinuation.unsafeLock()
-            guard self.disconnectionContinuation.unsafeValue == nil else {
-                continuation.resume(throwing: CancellationError())
-                self.disconnectionContinuation.unlock()
-                return
+            self.connectionStatusContinuation.modify { existing in
+                guard existing.disconnect == nil else {
+                    continuation.resume(throwing: SocketError.wsError(.init(domain: .WSConnectionDomain, code: .invalidConnectionAccess)))
+                    return
+                }
+                existing.disconnect = continuation
+                self.connection.cancel()
             }
-            self.disconnectionContinuation.unsafeValue = continuation
-            self.disconnectionContinuation.unlock()
-            
-            self.connection.cancel()
         }
     }
     
@@ -261,7 +260,7 @@ extension NetworkSocketConnection {
         
         try await withCheckedThrowingContinuation { [weak self] (continuation: CheckedContinuation<Void, Error>) in
             guard let self else { return }
-
+            
             self.connection.send(
                 content: data,
                 contentContext: context,
@@ -288,7 +287,8 @@ extension NetworkSocketConnection {
     }
     
     func receive() async throws -> SocketMessage {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<SocketMessage, Error>) in
+        try await withCheckedThrowingContinuation { [weak self] (continuation: CheckedContinuation<SocketMessage, Error>) in
+            guard let self else { return }
             let id = UUID()
             self.receiveContinuations.modify { $0[id] = continuation }
             self.receive { [weak self] result in
@@ -327,7 +327,7 @@ extension NetworkSocketConnection {
         
         (connection ?? self.connection).receiveMessage { [weak self] data, context, isComplete, error in
             guard let self else { return }
-
+            
             if let error = SocketError(error) {
                 self.handleError(error: error)
                 completion(.failure(error))
@@ -392,58 +392,40 @@ extension NetworkSocketConnection {
     private func setStateHandler(connection: NWConnection) {
         connection.stateUpdateHandler = { [weak self] state in
             guard let self = self else { return }
-            switch state {
-            case .setup, .preparing:
-                self._state.set(.connecting)
-            case .waiting(let error):
-                self._state.set(.disconnected)
-                self.connectionContinuation.modify { continuation in
-                    continuation?.resume(throwing: SocketError(error))
-                    continuation = nil
-                }
-                self.disconnectionContinuation.modify { continuation in
-                    continuation?.resume(throwing: SocketError(error))
-                    continuation = nil
-                }
-            case .ready:
-                self._state.set(.connected)
-                self.connectionContinuation.modify { continuation in
-                    continuation?.resume()
-                    continuation = nil
-                }
-                self.disconnectionContinuation.modify { continuation in
-                    continuation?.resume(throwing: SocketError.wsError(.init(domain: .WSConnectionDomain, code: .disconnectFailed)))
-                    continuation = nil
-                }
-            case .failed(let error):
-                self._state.set(.disconnected)
-                self.connectionContinuation.modify { continuation in
-                    continuation?.resume(throwing: SocketError(error))
-                    continuation = nil
-                }
-                self.disconnectionContinuation.modify { continuation in
-                    continuation?.resume(throwing: SocketError(error))
-                    continuation = nil
-                }
-            case .cancelled:
-                self._state.set(.disconnected)
-                self.connectionContinuation.modify { continuation in
-                    continuation?.resume(throwing: CancellationError())
-                    continuation = nil
-                }
-                self.disconnectionContinuation.modify { continuation in
-                    continuation?.resume()
-                    continuation = nil
-                }
-            @unknown default:
-                self._state.set(.disconnected)
-                self.connectionContinuation.modify { continuation in
-                    continuation?.resume(throwing: SocketError.wsError(.init(domain: .WSConnectionDomain, code: .connectFailed)))
-                    continuation = nil
-                }
-                self.disconnectionContinuation.modify { continuation in
-                    continuation?.resume(throwing: SocketError.wsError(.init(domain: .WSConnectionDomain, code: .disconnectFailed)))
-                    continuation = nil
+            self.connectionStatusContinuation.modify { continuation in
+                switch state {
+                case .setup, .preparing:
+                    self._state.set(.connecting)
+                case .waiting(let error):
+                    self._state.set(.disconnected)
+                    continuation.connect?.resume(throwing: SocketError(error))
+                    continuation.connect = nil
+                    continuation.disconnect?.resume(throwing: SocketError(error))
+                    continuation.disconnect = nil
+                case .ready:
+                    self._state.set(.connected)
+                    continuation.connect?.resume()
+                    continuation.connect = nil
+                    continuation.disconnect?.resume(throwing: SocketError.wsError(.init(domain: .WSConnectionDomain, code: .disconnectFailed)))
+                    continuation.disconnect = nil
+                case .failed(let error):
+                    self._state.set(.disconnected)
+                    continuation.connect?.resume(throwing: SocketError(error))
+                    continuation.connect = nil
+                    continuation.disconnect?.resume(throwing: SocketError(error))
+                    continuation.disconnect = nil
+                case .cancelled:
+                    self._state.set(.disconnected)
+                    continuation.connect?.resume(throwing: CancellationError())
+                    continuation.connect = nil
+                    continuation.disconnect?.resume()
+                    continuation.disconnect = nil
+                @unknown default:
+                    self._state.set(.disconnected)
+                    continuation.connect?.resume(throwing: SocketError.wsError(.init(domain: .WSConnectionDomain, code: .connectFailed)))
+                    continuation.connect = nil
+                    continuation.disconnect?.resume(throwing: SocketError.wsError(.init(domain: .WSConnectionDomain, code: .disconnectFailed)))
+                    continuation.disconnect = nil
                 }
             }
             self.eventPublisher.push(.stateChanged(self.state))
