@@ -9,17 +9,17 @@ import XCTest
 @testable import AsyncSockets
 import Network
 
-final class ReceiveTests: XCTestCase {
+final class ReceiveTests: AsyncSocketsTestCase {
 
     func testReceiveMessage() async throws {
-        let socket = Socket(url: URL(string: "ws://localhost:8000")!, options: .init(allowInsecureConnections: true))
+        let socket = Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         try await socket.connect()
         
         // Create a task to simulate receiving a message
-        Task {
-            try? await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second delay
-            try? await socket.send("Test Message")
-        }
+        activeTasks.append(Task {
+            try await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second delay
+            try await socket.send("Test Message")
+        })
         
         // Test receiving a message
         let message = try await socket.receive()
@@ -33,29 +33,30 @@ final class ReceiveTests: XCTestCase {
         
         // Clean up
         try? await socket.close()
+        print("test done.")
     }
     
     func testReceiveMessageConcurrent() async throws {
-        let socket = Socket(url: URL(string: "ws://localhost:8000")!, options: .init(allowInsecureConnections: true))
+        let socket = Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         try await socket.connect()
         
         let messageCount = 5
         let receivedMessages = Lock<[String]>([])
         
         // Create a task to simulate sending multiple messages
-        let sendTask = Task {
-            try? await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second delay
+        activeTasks.append(Task {
+            try await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second delay
             for i in 1...messageCount {
-                try? await socket.send("Message \(i)")
+                try await socket.send("Message \(i)")
+                print("sent \(i)")
             }
-        }
+        })
         
         // Receive messages concurrently
         try await withThrowingTaskGroup(of: Void.self) { group in
             for _ in 1...messageCount {
-                let localSocket = socket // Capture socket in local constant
                 group.addTask { @Sendable in
-                    let message = try await localSocket.receive()
+                    let message = try await socket.receive()
                     if case .string(let text) = message {
                         receivedMessages.modify { $0.append(text) }
                     }
@@ -65,8 +66,6 @@ final class ReceiveTests: XCTestCase {
             try await group.waitForAll()
         }
         
-        await sendTask.value
-        
         // Verify we received all messages
         XCTAssertEqual(receivedMessages.value.count, messageCount)
         for i in 1...messageCount {
@@ -74,11 +73,11 @@ final class ReceiveTests: XCTestCase {
         }
         
         // Clean up
-        try? await socket.close()
+        try await socket.close()
     }
     
     func testReceiveDecodable() async throws {
-        let socket = Socket(url: URL(string: "ws://localhost:8000")!, options: .init(allowInsecureConnections: true))
+        let socket = Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         try await socket.connect()
         
         struct TestMessage: Codable, Sendable {
@@ -90,10 +89,10 @@ final class ReceiveTests: XCTestCase {
         let jsonData = try JSONEncoder().encode(testMessage)
         
         // Create a task to simulate receiving a message
-        Task {
-            try? await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second delay
-            try? await socket.send(jsonData)
-        }
+        activeTasks.append(Task {
+            try await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second delay
+            try await socket.send(jsonData)
+        })
         
         // Test receiving a decoded message
         let received = try await socket.receive(type: TestMessage.self)
@@ -101,11 +100,11 @@ final class ReceiveTests: XCTestCase {
         XCTAssertEqual(received.id, testMessage.id)
         
         // Clean up
-        try? await socket.close()
+        try await socket.close()
     }
     
     func testReceiveDecodableConcurrent() async throws {
-        let socket = Socket(url: URL(string: "ws://localhost:8000")!, options: .init(allowInsecureConnections: true))
+        let socket = Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         try await socket.connect()
         
         struct TestMessage: Codable, Sendable {
@@ -117,28 +116,30 @@ final class ReceiveTests: XCTestCase {
         let receivedMessages: Lock<[TestMessage]> = Lock([])
         
         // Create a task to simulate sending multiple messages
-        let sendTask = Task {
-            try? await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second delay
+        activeTasks.append(Task {
+            try await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second delay
             for i in 1...messageCount {
                 let message = TestMessage(id: i, text: "Message \(i)")
-                let data = try? JSONEncoder().encode(message)
-                try? await socket.send(data!)
+                let data = try JSONEncoder().encode(message)
+                print("sending \(i)")
+                try await socket.send(data)
+                print("sent \(i)")
             }
-        }
+        })
         
         // Receive messages concurrently
         try await withThrowingTaskGroup(of: Void.self) { group in
             for _ in 1...messageCount {
                 group.addTask {
+                    print("listening")
                     let message = try await socket.receive(type: TestMessage.self)
                     receivedMessages.modify { $0.append(message) }
+                    print("received!")
                 }
             }
             
             try await group.waitForAll()
         }
-        
-        await sendTask.value
         
         // Verify we received all messages
         XCTAssertEqual(receivedMessages.value.count, messageCount)
@@ -147,22 +148,22 @@ final class ReceiveTests: XCTestCase {
         }
         
         // Clean up
-        try? await socket.close()
+        try await socket.close()
     }
     
     func testMessagesSequence() async throws {
-        let socket = Socket(url: URL(string: "ws://localhost:8000")!, options: .init(allowInsecureConnections: true))
+        let socket = Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         try await socket.connect()
         
         let messageCount = 3
         var receivedCount = 0
         
         // Create a task to simulate sending multiple messages
-        Task {
+        activeTasks.append(Task {
             for i in 1...messageCount {
                 try? await socket.send("Message \(i)")
             }
-        }
+        })
         
         // Test receiving messages through AsyncSequence
         for try await message in socket.messages() {
@@ -181,13 +182,14 @@ final class ReceiveTests: XCTestCase {
         
         XCTAssertEqual(receivedCount, messageCount)
         try await socket.close()
+        print("test done.")
     }
     
     func testMessagesSequenceConcurrent() async throws {
         // Create multiple sockets
         let socketCount = 3
         let sockets = (0..<socketCount).map { _ in
-            Socket(url: URL(string: "ws://localhost:8000")!, options: .init(allowInsecureConnections: true))
+            Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         }
         
         // Connect all sockets
@@ -197,19 +199,19 @@ final class ReceiveTests: XCTestCase {
         
         let countLock = Lock<[Int]>([0, 0, 0])
         
-        Task {
+        activeTasks.append(Task {
             for i in 0..<3 {
                 for j in 0..<3 {
                     try? await sockets[j].send("\(i):\(j)")
                 }
             }
-        }
+        })
 
         try await withThrowingTaskGroup(of: Void.self) { group in
             for i in 0..<3 {
                 var count = 0
                 group.addTask {
-                    for try await message in  sockets[i].messages() {
+                    for try await message in sockets[i].messages() {
                         guard case let .string(str) = message else {
                             return
                         }
@@ -229,17 +231,17 @@ final class ReceiveTests: XCTestCase {
         XCTAssertEqual(countLock.value, [3, 3, 3])
         
         for socket in sockets {
-            try? await socket.close()
+            try await socket.close()
         }
         
         // Clean up
         for socket in sockets {
-            try? await socket.close()
+            try await socket.close()
         }
     }
     
     func testTypedMessagesSequence() async throws {
-        let socket = Socket(url: URL(string: "ws://localhost:8000")!, options: .init(allowInsecureConnections: true))
+        let socket = Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         try await socket.connect()
         
         struct TestMessage: Codable, Sendable {
@@ -251,23 +253,24 @@ final class ReceiveTests: XCTestCase {
         var receivedCount = 0
         
         // Create a task to simulate sending multiple messages
-        Task {
-            try? await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second delay
-            for i in 1...messageCount {
+        activeTasks.append(Task {
+            try await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second delay
+            for i in 0..<messageCount {
                 let message = TestMessage(id: i, text: "Message \(i)")
                 let data = try? JSONEncoder().encode(message)
                 try? await socket.send(data!)
+                print("Sent message \(i)")
             }
             try await Task.sleep(nanoseconds: 10_000_000_000)
             try await socket.close()
-        }
+        })
         
         // Test receiving typed messages through AsyncSequence
         for try await message in socket.messages(ofType: TestMessage.self) {
-            receivedCount += 1
+            print("received message \(message.id)")
             XCTAssertEqual(message.id, receivedCount)
             XCTAssertEqual(message.text, "Message \(receivedCount)")
-            
+            receivedCount += 1
             if receivedCount == messageCount {
                 break
             }
@@ -280,7 +283,7 @@ final class ReceiveTests: XCTestCase {
         // Create multiple sockets
         let socketCount = 3
         let sockets = (0..<socketCount).map { _ in
-            Socket(url: URL(string: "ws://localhost:8000")!, options: .init(allowInsecureConnections: true))
+            Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         }
         
         // Connect all sockets
@@ -290,12 +293,12 @@ final class ReceiveTests: XCTestCase {
 
         let countLock = Lock<[Int]>([0, 0, 0])
         
-        Task {
+        activeTasks.append(Task {
             for socket in sockets {
-                try? await Task.sleep(nanoseconds: 10_000_000_000)
-                try? await socket.close()
+                try await Task.sleep(nanoseconds: 10_000_000_000)
+                try await socket.close()
             }
-        }
+        })
         
         struct TestMessage: Codable, Sendable {
             let socketId: Int
@@ -304,15 +307,15 @@ final class ReceiveTests: XCTestCase {
         }
         
         // Create tasks to send messages to each socket
-        Task {
+        activeTasks.append(Task {
             for i in 0..<3 {
                 for j in 0..<3 {
                     let message = TestMessage(socketId: j, messageId: i, text: "Message \(i)")
                     let data = try? JSONEncoder().encode(message)
-                    try? await sockets[j].send(data!)
+                    try await sockets[j].send(data!)
                 }
             }
-        }
+        })
         
         try await withThrowingTaskGroup(of: Void.self) { group in
             for i in 0..<3 {
@@ -334,12 +337,12 @@ final class ReceiveTests: XCTestCase {
         XCTAssertEqual(countLock.value, [3, 3, 3])
         
         for socket in sockets {
-            try? await socket.close()
+            try await socket.close()
         }
     }
     
-    func testReceiveFailsWhenNotConnected() async {
-        let socket = Socket(url: URL(string: "ws://localhost:8000")!, options: .init(allowInsecureConnections: true))
+    func testReceiveFailsWhenNotConnected() async throws {
+        let socket = Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         
         do {
             _ = try await socket.receive()
@@ -349,11 +352,11 @@ final class ReceiveTests: XCTestCase {
         }
         
         // Clean up
-        try? await socket.close()
+        try await socket.close()
     }
     
-    func testReceiveFailsWhenNotConnectedConcurrent() async {
-        let socket = Socket(url: URL(string: "ws://localhost:8000")!, options: .init(allowInsecureConnections: true))
+    func testReceiveFailsWhenNotConnectedConcurrent() async throws {
+        let socket = Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         
         // Try multiple receives concurrently without connecting
         await withThrowingTaskGroup(of: Void.self) { group in
@@ -371,13 +374,13 @@ final class ReceiveTests: XCTestCase {
         }
         
         // Clean up
-        try? await socket.close()
+        try await socket.close()
     }
     
-    func testReceiveFailsAfterClose() async {
-        let socket = Socket(url: URL(string: "ws://localhost:8000")!, options: .init(allowInsecureConnections: true))
-        try? await socket.connect()
-        try? await socket.close()
+    func testReceiveFailsAfterClose() async throws {
+        let socket = Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
+        try await socket.connect()
+        try await socket.close()
         
         do {
             _ = try await socket.receive()
@@ -387,10 +390,10 @@ final class ReceiveTests: XCTestCase {
         }
     }
     
-    func testReceiveFailsAfterCloseConcurrent() async {
-        let socket = Socket(url: URL(string: "ws://localhost:8000")!, options: .init(allowInsecureConnections: true))
-        try? await socket.connect()
-        try? await socket.close()
+    func testReceiveFailsAfterCloseConcurrent() async throws {
+        let socket = Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
+        try await socket.connect()
+        try await socket.close()
         
         // Try multiple receives concurrently after closing
         await withThrowingTaskGroup(of: Void.self) { group in

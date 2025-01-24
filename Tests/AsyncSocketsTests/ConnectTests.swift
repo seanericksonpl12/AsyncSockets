@@ -9,13 +9,10 @@ import XCTest
 @testable import AsyncSockets
 import Network
 
-final class ConnectTests: XCTestCase {
+final class ConnectTests: AsyncSocketsTestCase {
     
     func testConnectSuccessfulHostPort() async throws {
-        guard let socket = Socket(host: "localhost", port: 8000, options: .init(allowInsecureConnections: true)) else {
-            XCTFail("Invalid Socket!")
-            return
-        }
+        let socket = Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         try await socket.connect()
         
         XCTAssertEqual(socket.state, .connected)
@@ -39,10 +36,7 @@ final class ConnectTests: XCTestCase {
         let socketCount = 5
         var sockets: [Socket] = []
         for _ in 0..<socketCount {
-            guard let socket = Socket(host: "localhost", port: 8000, options: .init(allowInsecureConnections: true)) else {
-                XCTFail("Invalid Socket!")
-                return
-            }
+            let socket = Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
             sockets.append(socket)
         }
         
@@ -100,7 +94,7 @@ final class ConnectTests: XCTestCase {
     }
     
     func testConnectFailsWithInvalidHostError() async {
-        guard let socket = Socket(host: "fdsafdsagdsah", port: 8000) else { XCTFail("Invalid socket"); return  }
+        let socket = Socket(host: "fdsafdsagdsah", port: self.serverport, options: .init(allowInsecureConnections: true))
         do {
             try await socket.connect()
             XCTFail("Expected connection to fail")
@@ -114,7 +108,7 @@ final class ConnectTests: XCTestCase {
         let socketCount = 5
         var sockets: [Socket] = []
         for _ in 0..<socketCount {
-            guard let socket = Socket(host: "fdsafdsa", port: 8000) else { XCTFail("Invalid socket"); return  }
+            let socket = Socket(host: "fdsafdsagdsah", port: self.serverport, options: .init(allowInsecureConnections: true))
             sockets.append(socket)
         }
         
@@ -134,10 +128,7 @@ final class ConnectTests: XCTestCase {
     
     func testConnectFailsWithInvalidPort() async {
         // Create socket with invalid port
-        guard let socket = Socket(host: "localhost", port: 1, options: .init(allowInsecureConnections: true)) else {
-            XCTFail("Socket not created!")
-            return
-        }
+        let socket = Socket(host: self.localhost, port: 1, options: .init(allowInsecureConnections: true))
         
         do {
             try await socket.connect()
@@ -152,10 +143,7 @@ final class ConnectTests: XCTestCase {
         let socketCount = 5
         var sockets: [Socket] = []
         for i in 0..<socketCount {
-            guard let socket = Socket(host: "localhost", port: 1 + i, options: .init(allowInsecureConnections: true)) else {
-                XCTFail("Invalid socket")
-                return
-            }
+            let socket = Socket(host: self.localhost, port: 1, options: .init(allowInsecureConnections: true))
             sockets.append(socket)
         }
         
@@ -218,10 +206,7 @@ final class ConnectTests: XCTestCase {
     }
     
     func testMultipleConnectCallsFail() async throws {
-        guard let socket = Socket(host: "localhost", port: 8000, options: .init(allowInsecureConnections: true)) else {
-            XCTFail("Invalid Socket!")
-            return
-        }
+        let socket = Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         // First connect should succeed
         try await socket.connect()
         
@@ -235,10 +220,7 @@ final class ConnectTests: XCTestCase {
     }
     
     func testMultipleConnectCallsFailConcurrent() async throws {
-        guard let socket = Socket(host: "localhost", port: 8000, options: .init(allowInsecureConnections: true)) else {
-            XCTFail("Invalid Socket!")
-            return
-        }
+        let socket = Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         let connectCount = 5
         let errorCount = Lock(0)
         try await withThrowingTaskGroup(of: Void.self) { group in

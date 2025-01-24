@@ -9,10 +9,10 @@ import XCTest
 @testable import AsyncSockets
 import Network
 
-final class CloseTests: XCTestCase {
+final class CloseTests: AsyncSocketsTestCase {
 
     func testSynchronousClose() async throws {
-        let socket = Socket(url: URL(string: "ws://localhost:8000")!, options: .init(allowInsecureConnections: true))
+        let socket = Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         try await socket.connect()
         
         // Test synchronous close
@@ -29,7 +29,7 @@ final class CloseTests: XCTestCase {
         // Create multiple sockets
         let socketCount = 5
         let sockets = (0..<socketCount).map { _ in
-            Socket(url: URL(string: "ws://localhost:8000")!, options: .init(allowInsecureConnections: true))
+            Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         }
         
         // Connect all sockets
@@ -56,7 +56,7 @@ final class CloseTests: XCTestCase {
     }
     
     func testAsynchronousClose() async throws {
-        let socket = Socket(url: URL(string: "ws://localhost:8000")!, options: .init(allowInsecureConnections: true))
+        let socket = Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         try await socket.connect()
         
         // Test asynchronous close
@@ -69,7 +69,7 @@ final class CloseTests: XCTestCase {
         // Create multiple sockets
         let socketCount = 5
         let sockets = (0..<socketCount).map { _ in
-            Socket(url: URL(string: "ws://localhost:8000")!, options: .init(allowInsecureConnections: true))
+            Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         }
         
         // Connect all sockets
@@ -92,7 +92,7 @@ final class CloseTests: XCTestCase {
     }
     
     func testCloseWithCustomCode() async throws {
-        let socket = Socket(url: URL(string: "ws://localhost:8000")!, options: .init(allowInsecureConnections: true))
+        let socket = Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         try await socket.connect()
         
         // Test close with custom code
@@ -107,7 +107,7 @@ final class CloseTests: XCTestCase {
         // Create multiple sockets
         let socketCount = 5
         let sockets = (0..<socketCount).map { _ in
-            Socket(url: URL(string: "ws://localhost:8000")!, options: .init(allowInsecureConnections: true))
+            Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         }
         
         // Connect all sockets
@@ -139,7 +139,7 @@ final class CloseTests: XCTestCase {
     }
     
     func testCloseWhenNotConnected() async throws {
-        let socket = Socket(url: URL(string: "ws://localhost:8000")!, options: .init(allowInsecureConnections: true))
+        let socket = Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         // Test closing without connecting
         try await socket.close()
         
@@ -149,8 +149,8 @@ final class CloseTests: XCTestCase {
     func testCloseWhenNotConnectedConcurrent() async throws {
         // Create multiple sockets
         let socketCount = 5
-        var sockets = (0..<socketCount).map { _ in
-            Socket(url: URL(string: "ws://localhost:8000")!, options: .init(allowInsecureConnections: true))
+        let sockets = (0..<socketCount).map { _ in
+            Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         }
         
         // Close all sockets concurrently without connecting
@@ -168,7 +168,7 @@ final class CloseTests: XCTestCase {
     }
     
     func testMultipleCloseCalls() async throws {
-        let socket = Socket(url: URL(string: "ws://localhost:8000")!, options: .init(allowInsecureConnections: true))
+        let socket = Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         
         try await socket.connect()
         
@@ -182,7 +182,7 @@ final class CloseTests: XCTestCase {
     }
     
     func testMultipleCloseCallsConcurrent() async throws {
-        let socket = Socket(url: URL(string: "ws://localhost:8000")!, options: .init(allowInsecureConnections: true))
+        let socket = Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         try await socket.connect()
         
         // Try multiple concurrent close calls on the same socket
@@ -200,7 +200,7 @@ final class CloseTests: XCTestCase {
     }
     
     func testCloseTerminatesMessageSequence() async throws {
-        let socket = Socket(url: URL(string: "ws://localhost:8000")!, options: .init(allowInsecureConnections: true))
+        let socket = Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         try await socket.connect()
         
         let messageCount = 3
@@ -228,7 +228,7 @@ final class CloseTests: XCTestCase {
         // Create multiple sockets
         let socketCount = 3
         var sockets = (0..<socketCount).map { _ in
-            Socket(url: URL(string: "ws://localhost:8000")!, options: .init(allowInsecureConnections: true))
+            Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         }
         
         // Connect all sockets

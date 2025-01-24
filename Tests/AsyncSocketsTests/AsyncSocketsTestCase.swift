@@ -11,20 +11,29 @@ import XCTest
 class AsyncSocketsTestCase: XCTestCase {
     
     var activeTasks: [Task<Void, Error>]!
-    var defaultUrl: URL!
+    var localhost: String!
+    var serverport: UInt16!
+    var server: Server!
     
-    override func setUp() {
-        super.setUp()
-        self.defaultUrl = URL(string: "ws://localhost:8000")
+    override func setUp() async throws {
+        try await super.setUp()
+        
         self.activeTasks = []
+        self.localhost = "localhost"
+        self.serverport = 8000
+        self.server = try Server(port: serverport)
+        try await server.start()
     }
     
-    override func tearDown() {
+    override func tearDown() async throws {
         self.activeTasks.forEach {
             $0.cancel()
         }
         self.activeTasks = nil
-        self.defaultUrl = nil
-        super.tearDown()
+        self.localhost = nil
+        self.serverport = nil
+        try await self.server.stop()
+        self.server = nil
+        try await super.tearDown()
     }
 }

@@ -83,16 +83,13 @@ public final class Socket: Sendable {
         self.connection = NetworkSocketConnection(url: url, options: options)
     }
     
-    /// Creates a new `Socket` instance with the provided host, port and options if the port is valid,
-    /// else returns nil.
-    ///
+    /// Creates a new `Socket` instance with the provided host, port and options
     /// - Parameters:
     ///    - host: The host of the socket connection
     ///    - port: The port of the socket connection.
     ///    - options: Additional socket options to use, if provided.
-    public init?(host: String, port: Int, options: Options = Options()) {
-        guard let connection = NetworkSocketConnection(host: host, port: port, options: options) else { return nil }
-        self.connection = connection
+    public init(host: String, port: UInt16, options: Options = Options()) {
+        self.connection = NetworkSocketConnection(host: host, port: port, options: options)
     }
     
     /// Start the socket connection.
@@ -191,6 +188,11 @@ public final class Socket: Sendable {
     /// An AsyncSequence of all events that occur on the websocket.
     ///
     /// This sequence will not throw or end until either `.end()` is called or the sequence is deallocated.
+    ///
+    /// - Warning: Pings and Pongs will not be published to this stream until there is also an active message
+    /// stream, or an active call to `receive()`.  Since pings and pongs are just data parsed by
+    /// `NWConnection` like any other message, if you are not listening to any messages, no pings or pongs
+    /// will be parsed.
     ///
     /// Example:
     ///
