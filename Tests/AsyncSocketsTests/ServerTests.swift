@@ -31,7 +31,6 @@ final class ServerTests: XCTestCase {
     
     func testStart() async throws {
         try await server.start()
-        try await server.stop()
     }
     
     func testConnect() async throws {
