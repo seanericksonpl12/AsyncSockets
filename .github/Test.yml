@@ -2,7 +2,7 @@ name: Test
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "task/unit-test-automation" ]
   pull_request:
     branches: [ "main" ]
 
