@@ -209,7 +209,7 @@ public final class ServerConnection: Sendable {
         }
         var payloadInfo: String?
         if let frame = SocketFrame(data) {
-            payloadInfo = "\npayload len: \(frame.payloadLen)\npayload: \(String(data: frame.payload, encoding: .utf8))"
+            payloadInfo = "\npayload len: \(frame.payloadLen)\npayload: \(String(data: frame.payload, encoding: .utf8) ?? "nil")"
         }
         debugLog("_______________________________________________\nData of size \(data)\(payloadInfo ?? "")\n\(value)\n_______________________________________________")
     }

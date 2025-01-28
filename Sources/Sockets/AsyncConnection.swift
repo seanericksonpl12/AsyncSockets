@@ -62,6 +62,6 @@ protocol AsyncConnection: Sendable, AnyObject {
     func send(_ data: Data) async throws
     func ping() async throws
     func pong() async throws
-    func buildMessageSequence<T: Decodable & Sendable>() -> AsyncSocketSequence<T>
+    func buildMessageSequence() -> AsyncSocketSequence
     func buildEventSequence() -> AsyncEventSequence
 }

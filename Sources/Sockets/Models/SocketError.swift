@@ -188,6 +188,10 @@ public struct WSError: Error, @unchecked Sendable {
             "Failed to decode the received data"
         case .connectionTimedOut:
             "Failed to establish connection in time.  Edit this timeout value in `Socket.Options`."
+        case .badDataFormat:
+            "Received improperly formatted data."
+        case .invalidHeartbeatInternval:
+            "Invalid heartbeat interval - provide a value greater than or equal to 1.0 seconds."
         }
     }
     
@@ -215,4 +219,6 @@ public enum WSErrorCode: Int, Sendable {
     // MARK: - WSDataDomain
     case failedToEncode = 5007
     case failedToDecode = 5008
+    case badDataFormat = 5009
+    case invalidHeartbeatInternval = 5010
 }

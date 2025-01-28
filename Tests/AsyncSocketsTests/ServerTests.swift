@@ -115,7 +115,7 @@ final class ServerTests: XCTestCase {
         try await socket.connect()
         activeTasks.append(Task { for try await _ in socket.messages() {} })
         activeTasks.append(Task {
-            for await event in socket.events() {
+            for try await event in socket.messages() {
                 print(event)
                 if case .pong = event {
                     expectation.fulfill()

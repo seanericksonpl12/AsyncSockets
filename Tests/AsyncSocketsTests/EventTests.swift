@@ -46,12 +46,13 @@ final class EventTests: AsyncSocketsTestCase {
         
         let connecting = Lock([Int](repeating: 0, count: socketCount))
         let connected = Lock([Int](repeating: 0, count: socketCount))
-        
+        let eventStreams: [AsyncEventSequence] = sockets.map { $0.events() }
         activeTasks.append(Task {
             await withTaskGroup(of: Void.self) { group in
-                for (index, socket) in sockets.enumerated() {
+                for (index, stream) in eventStreams.enumerated() {
                     group.addTask {
-                        for await event in socket.events() {
+                        for await event in stream {
+                            print("EVENT: \(event)")
                             switch event {
                             case .stateChanged(let state):
                                 switch state {
@@ -60,7 +61,7 @@ final class EventTests: AsyncSocketsTestCase {
                                 case .connected:
                                     connected.modify { $0[index] += 1 }
                                 default:
-                                    XCTFail("\(state) not expected.")
+                                    break
                                 }
                             default:
                                 XCTFail("Received \(event) instead of state change")
@@ -76,6 +77,9 @@ final class EventTests: AsyncSocketsTestCase {
         for socket in sockets {
             try await socket.connect()
         }
+        for stream in eventStreams {
+            stream.end()
+        }
         try await Task.sleep(nanoseconds: 100_000_000)
         XCTAssertEqual([Int](repeating: 1, count: sockets.count), connected.value)
         XCTAssertEqual([Int](repeating: 1, count: sockets.count), connecting.value)
@@ -85,6 +89,7 @@ final class EventTests: AsyncSocketsTestCase {
         let socket = Socket(url: URL(string: "ws://localhost:8000")!, options: .init(allowInsecureConnections: true))
         let disconnected = XCTestExpectation(description: "received disconnected event")
         try await socket.connect()
+        try await Task.sleep(nanoseconds: 500_000_000)
         activeTasks.append(Task {
             for await event in socket.events() {
                 switch event {

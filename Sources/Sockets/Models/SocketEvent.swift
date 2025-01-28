@@ -45,10 +45,4 @@ public enum SocketEvent: Sendable {
     /// Indicates the socket has found a better path, and recommends reconnecting.  While recommended, receiving this
     /// does not mean a refresh is necessary.
     case shouldRefresh
-    
-    /// Indicates the socket has received a ping
-    case ping
-    
-    /// Indicates the socket has received a pong
-    case pong
 }

@@ -42,10 +42,13 @@ import Foundation
 public final class Socket: Sendable {
     
     /// Additional Options for a Socket.
-    public struct Options {
+    public struct Options: Sendable {
         
         /// Allow the socket to connect with using TLS.  If true, TLS is disabled.  Default is `false`.
         public var allowInsecureConnections: Bool
+        
+        /// The time in seconds between heartbeat ping/pong.  If nil, no heartbeat will be sent.  Default is `5.0`
+        public var heartbeatInterval: TimeInterval?
         
         /// Additional TCP Protocol options, from the `Network` framework.
         public var tcpProtocolOptions: NWProtocolTCP.Options
@@ -56,10 +59,12 @@ public final class Socket: Sendable {
         /// Create a new Options object with the given options.
         public init(
             allowInsecureConnections: Bool = false,
+            heartbeatInterval: TimeInterval? = 5.0,
             tcpProtocolOptions: NWProtocolTCP.Options = NWProtocolTCP.Options(),
             websocketProtocolOptions: NWProtocolWebSocket.Options = NetworkSocketConnection.defaultSocketOptions
         ) {
             self.allowInsecureConnections = allowInsecureConnections
+            self.heartbeatInterval = heartbeatInterval
             self.tcpProtocolOptions = tcpProtocolOptions
             self.websocketProtocolOptions = websocketProtocolOptions
         }
@@ -136,52 +141,46 @@ public final class Socket: Sendable {
 
     /// An AsyncSequence of all messages received by the websocket.
     ///
-    /// This sequence will return all messages received by the websocket as type `SocketMessage`.  If you
-    /// want to listen for only messages of a certain `Decodable` type, try the `messages(ofType:)`
-    /// function.
+    /// This sequence will return all messages received by the websocket as type `SocketMessage`, including pings
+    /// and pongs.  See the documentation on `AsyncSocketSequence` for information on filtering functions, shown
+    /// below.
     ///
-    /// - Note: Pings and Pongs will not be received by this sequence.  They are considered a `SocketEvent`
-    /// and can be streamed from `AsyncEventSequence`, returned by the `events()` function.
+    /// Basic Example:
     ///
-    /// Example:
-    ///
-    ///     for try await message in socket.messages(ofType: ExpectedResponse.self) {
+    ///     for try await message in socket.messages() {
     ///         switch message {
     ///         case .string(let str):
     ///             print("received type string: \(str)")
     ///         case .data(let data):
     ///             print("received type data of size \(data)")
+    ///         case .ping, .pong:
+    ///             break
     ///         }
     ///     }
     ///
+    ///     ////////////////////////////////////////////////////////////////
+    ///
+    /// Text Example:
+    ///
+    ///     for try await text in socket.messages().text() {
+    ///         print("received string: \(text)")
+    ///     }
+    ///
+    ///     ////////////////////////////////////////////////////////////////
+    ///
+    /// Object Example:
+    ///
+    ///     struct MyStruct: Decodable, Sendable {
+    ///         let id = Int
+    ///         let value = String
+    ///     }
+    ///
+    ///     for try await obj in socket.messages.obj(ofType: MyStruct.self) {
+    ///         print("received object \(obj.id) with value \(obj.value)")
+    ///     }
+    ///
     /// - Returns: An AsyncSocketSequence that streams `SocketMessage`s.
-    public func messages() -> AsyncSocketSequence<SocketMessage> {
-        return connection.buildMessageSequence()
-    }
-    
-    /// A convenience AsyncSequence of all messages received by the websocket, of a given `Decodable` type.
-    ///
-    /// This sequence will only return objects that are successfully decoded as the given type - meaning that if a
-    /// message fails to be decoded as the given type, **No Error Will Be Thrown, and No Message Will be
-    /// Delivered**. If you need to receive all messages or want to know when a message fails decoding, you
-    /// must use the `messages()` func and manually decode socket messages.
-    ///
-    /// Example:
-    ///
-    ///     struct ExpectedResponse: Decodable {
-    ///         let value: Int
-    ///         let name: String
-    ///     }
-    ///
-    ///     for try await response in socket.messages(ofType: ExpectedResponse.self) {
-    ///         print("received \(response.name) of value \(response.value)")
-    ///     }
-    ///
-    /// - Parameter ofType: The `Decodable` & `Sendable` type that AsyncSockets will use to decode
-    /// messages.
-    ///
-    /// - Returns: An AsyncSocketSequence that streams the given object type provided.
-    public func messages<T: Decodable & Sendable>(ofType type: T.Type) -> AsyncSocketSequence<T> {
+    public func messages() -> AsyncSocketSequence {
         return connection.buildMessageSequence()
     }
     

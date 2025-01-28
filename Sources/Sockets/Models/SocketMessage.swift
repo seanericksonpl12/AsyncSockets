@@ -46,4 +46,10 @@ public enum SocketMessage: Sendable, Decodable {
     
     /// A binary data message
     case data(Data)
+    
+    /// A websocket Ping message
+    case ping
+    
+    /// A websocket Pong message
+    case pong
 }
