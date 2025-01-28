@@ -27,7 +27,7 @@ final class ReceiveTests: AsyncSocketsTestCase {
         switch message {
         case .string(let text):
             XCTAssertEqual(text, "Test Message")
-        case .data:
+        default:
             XCTFail("Expected string message")
         }
         
@@ -171,7 +171,7 @@ final class ReceiveTests: AsyncSocketsTestCase {
             case .string(let text):
                 receivedCount += 1
                 XCTAssertEqual(text, "Message \(receivedCount)")
-            case .data:
+            default:
                 XCTFail("Expected string message")
             }
             
@@ -240,6 +240,7 @@ final class ReceiveTests: AsyncSocketsTestCase {
         }
     }
     
+    @available(macOS 15.0, *)
     func testTypedMessagesSequence() async throws {
         let socket = Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         try await socket.connect()
@@ -266,7 +267,7 @@ final class ReceiveTests: AsyncSocketsTestCase {
         })
         
         // Test receiving typed messages through AsyncSequence
-        for try await message in socket.messages(ofType: TestMessage.self) {
+        for try await message in socket.messages().objects(ofType: TestMessage.self) {
             print("received message \(message.id)")
             XCTAssertEqual(message.id, receivedCount)
             XCTAssertEqual(message.text, "Message \(receivedCount)")
@@ -279,6 +280,7 @@ final class ReceiveTests: AsyncSocketsTestCase {
         XCTAssertEqual(receivedCount, messageCount)
     }
     
+    @available(macOS 15.0, *)
     func testTypedMessagesSequenceConcurrent() async throws {
         // Create multiple sockets
         let socketCount = 3
@@ -321,7 +323,7 @@ final class ReceiveTests: AsyncSocketsTestCase {
             for i in 0..<3 {
                 var count = 0
                 group.addTask {
-                    for try await message in  sockets[i].messages(ofType: TestMessage.self) {
+                    for try await message in  sockets[i].messages().objects(ofType: TestMessage.self) {
                         count += 1
                         countLock.modify { count in
                             XCTAssertEqual(message.socketId, i)
@@ -409,6 +411,27 @@ final class ReceiveTests: AsyncSocketsTestCase {
                 }
             }
         }
+    }
+    
+    func testTextFilter() async throws {
+        
+        let socket = Socket(host: "localhost", port: 8000, options: .init(allowInsecureConnections: true))
+        try await socket.connect()
+        let messages = socket.messages()
+        var count = 0
+        activeTasks.append(Task {
+            for i in 0..<20 {
+                try await Task.sleep(nanoseconds: 100_000_000)
+                try await socket.send("message")
+                if i == 10 { messages.end() }
+            }
+        })
+        
+        for try await text in messages.text() {
+            if text == "message" { count += 1 }
+        }
+        
+        XCTAssertEqual(count, 10)
     }
 }
 

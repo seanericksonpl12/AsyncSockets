@@ -47,10 +47,10 @@ final class Server: Sendable {
                 continuation.resume(throwing: CancellationError())
                 return
             }
+            guard self.startContinuation.modify({ return $0 == nil }) else { return }
             self.startContinuation.modify { $0 = continuation }
             self.listener.start(queue: queue)
         }
-        print("Listener started")
     }
     
     func stop() async throws {

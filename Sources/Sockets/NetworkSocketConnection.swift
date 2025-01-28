@@ -97,6 +97,12 @@ public final class NetworkSocketConnection: AsyncConnection {
     /// JSONDecoder for decoding socket messages
     private let decoder = JSONDecoder()
     
+    /// Heartbeat management, if needed
+    private let heartbeatManager = Lazy<HeartbeatManager?>()
+    
+    /// User provided socket options
+    private let options: Socket.Options
+    
     /// Default options for the WebSocketProtocol:
     ///     - `autoReplyPing: on`
     public static let defaultSocketOptions: WebSocketProtocolOptions = {
@@ -136,15 +142,17 @@ public final class NetworkSocketConnection: AsyncConnection {
     ///
     ///    - Returns: A new `SocketConnection`
     init(endpoint: NWEndpoint, options: Socket.Options) {
+        self.options = options
         self.parameters = NWParameters(tls: options.allowInsecureConnections ? nil : .init(), tcp: options.tcpProtocolOptions)
         self.parameters.defaultProtocolStack.applicationProtocols.insert(options.websocketProtocolOptions, at: 0)
         self.endpoint = endpoint
         self.connection = NWConnection(to: self.endpoint, using: self.parameters)
         self._currentPath = Lock(connection.currentPath)
         self.setHandlers(for: self.connection)
+        self.heartbeatManager.set { options.heartbeatInterval != nil ? HeartbeatManager(delegate: self) : nil }
     }
     
-    /// clean up any active continuations.
+    /// clean up any active continuations/streams.
     deinit {
         killAllMessageStreams()
         killAllEventStreams()
@@ -179,11 +187,15 @@ extension NetworkSocketConnection {
                 self.connection.start(queue: self.queue)
             }
         }
+        try startHeartbeat()
     }
     
     /// Close the conection and clean up any process / storage
     func close(withCode code: CloseCode?) {
-        defer { killAllMessageStreams() }
+        defer {
+            killAllMessageStreams()
+            killAllEventStreams()
+        }
         guard self.state != .disconnected else { return }
         
         // TODO: - Send correct close code info to server
@@ -193,7 +205,10 @@ extension NetworkSocketConnection {
     
     /// Close the conection and clean up any process / storage, waiting for the proper FIN/ACK messages before returning.
     func close(withCode code: CloseCode?) async throws {
-        defer { killAllMessageStreams() }
+        defer {
+            killAllMessageStreams()
+            killAllEventStreams()
+        }
         
         guard self.state != .disconnected else {
             return
@@ -281,9 +296,18 @@ extension NetworkSocketConnection {
         }
     }
     
+    
     func receive<T: Decodable>(decodingType: T.Type) async throws -> T {
         let message = try await receive()
-        return try decode(message, type: decodingType)
+        switch message {
+        case .string(let string):
+            guard let data = string.data(using: .utf8) else { throw SocketError.wsError(.init(domain: .WSDataDomain, code: .failedToDecode)) }
+            return try decoder.decode(decodingType, from: data)
+        case .data(let data):
+            return try decoder.decode(decodingType, from: data)
+        case .ping, .pong:
+            return try await receive(decodingType: decodingType)
+        }
     }
     
     func receive() async throws -> SocketMessage {
@@ -335,12 +359,12 @@ extension NetworkSocketConnection {
             }
             
             guard let metadata = context?.protocolMetadata.first as? WebSocketMetadata else {
+                completion(.failure(SocketError.wsError(.init(domain: .WSDataDomain, code: .badDataFormat))))
                 return
             }
-            
             switch metadata.opcode {
             case .cont:
-                break
+                self.receive(connection: connection, completion: completion)
             case .text:
                 guard let data, let text = String(data: data, encoding: .utf8) else { return }
                 completion(.success(.string(text)))
@@ -350,13 +374,13 @@ extension NetworkSocketConnection {
             case .close:
                 self.handleClose(closeCode: metadata.closeCode, reason: data)
             case .ping:
-                self.handlePing()
+                completion(.success(.ping))
             case .pong:
-                self.handlePong()
+                self.heartbeatManager.value?.receivedHeartbeat()
+                completion(.success(.pong))
             @unknown default:
                 fatalError()
             }
-            return
         }
     }
     
@@ -396,39 +420,44 @@ extension NetworkSocketConnection {
                 switch state {
                 case .setup, .preparing:
                     self._state.set(.connecting)
+                    self.eventPublisher.push(.stateChanged(.connecting))
                 case .waiting(let error):
                     self._state.set(.disconnected)
+                    self.eventPublisher.push(.stateChanged(.disconnected))
                     continuation.connect?.resume(throwing: SocketError(error))
                     continuation.connect = nil
                     continuation.disconnect?.resume(throwing: SocketError(error))
                     continuation.disconnect = nil
                 case .ready:
                     self._state.set(.connected)
+                    self.eventPublisher.push(.stateChanged(.connected))
                     continuation.connect?.resume()
                     continuation.connect = nil
                     continuation.disconnect?.resume(throwing: SocketError.wsError(.init(domain: .WSConnectionDomain, code: .disconnectFailed)))
                     continuation.disconnect = nil
                 case .failed(let error):
                     self._state.set(.disconnected)
+                    self.eventPublisher.push(.stateChanged(.disconnected))
                     continuation.connect?.resume(throwing: SocketError(error))
                     continuation.connect = nil
                     continuation.disconnect?.resume(throwing: SocketError(error))
                     continuation.disconnect = nil
                 case .cancelled:
                     self._state.set(.disconnected)
+                    self.eventPublisher.push(.stateChanged(.disconnected))
                     continuation.connect?.resume(throwing: CancellationError())
                     continuation.connect = nil
                     continuation.disconnect?.resume()
                     continuation.disconnect = nil
                 @unknown default:
                     self._state.set(.disconnected)
+                    self.eventPublisher.push(.stateChanged(.disconnected))
                     continuation.connect?.resume(throwing: SocketError.wsError(.init(domain: .WSConnectionDomain, code: .connectFailed)))
                     continuation.connect = nil
                     continuation.disconnect?.resume(throwing: SocketError.wsError(.init(domain: .WSConnectionDomain, code: .disconnectFailed)))
                     continuation.disconnect = nil
                 }
             }
-            self.eventPublisher.push(.stateChanged(self.state))
         }
     }
     
@@ -451,15 +480,6 @@ extension NetworkSocketConnection {
             guard let self else { return }
             self._isViableConnection.set(isViable)
         }
-    }
-    
-    // TODO: - Ping pong handling
-    private func handlePing() {
-        self.eventPublisher.push(.ping)
-    }
-    
-    private func handlePong() {
-        self.eventPublisher.push(.pong)
     }
     
     private func handleClose(closeCode: NWProtocolWebSocket.CloseCode, reason: Data?) {
@@ -489,43 +509,12 @@ extension NetworkSocketConnection {
     }
 }
 
-// MARK: - Decode
-extension NetworkSocketConnection {
-    
-    private func decode<T: Decodable>(_ message: SocketMessage, type: T.Type) throws -> T {
-        switch message {
-        case .string(let string):
-            guard let data = string.data(using: .utf8) else { throw SocketError.wsError(.init(domain: .WSDataDomain, code: .failedToDecode)) }
-            return try decoder.decode(type, from: data)
-        case .data(let data):
-            return try decoder.decode(type, from: data)
-        }
-    }
-    
-    private func killAllContinuations() {
-        self.connectionContinuation.modify { connectionContinuation in
-            connectionContinuation?.resume()
-            connectionContinuation = nil
-        }
-        self.disconnectionContinuation.modify { disconnectionContinuation in
-            disconnectionContinuation?.resume()
-            disconnectionContinuation = nil
-        }
-        self.receiveContinuations.modify { continuations in
-            for continuation in continuations.values {
-                continuation.resume(throwing: CancellationError())
-            }
-            continuations = [:]
-        }
-    }
-}
-
 // MARK: - Sequences
 extension NetworkSocketConnection {
     
     /// Build a new `AsyncSocketSequence` that iterates a given decodable type
-    func buildMessageSequence<T: Decodable & Sendable>() -> AsyncSocketSequence<T> {
-        let stream = AsyncSocketSequence<T>(connection: self)
+    func buildMessageSequence() -> AsyncSocketSequence {
+        let stream = AsyncSocketSequence(connection: self)
         self.messagePublisher.addSubscriber(stream)
         return stream
     }
@@ -552,6 +541,51 @@ extension NetworkSocketConnection {
                 stream.end()
             }
             streams.removeAll()
+        }
+    }
+}
+
+// MARK: - Util
+extension NetworkSocketConnection {
+
+    private func killAllContinuations() {
+        self.connectionContinuation.modify { connectionContinuation in
+            connectionContinuation?.resume()
+            connectionContinuation = nil
+        }
+        self.disconnectionContinuation.modify { disconnectionContinuation in
+            disconnectionContinuation?.resume()
+            disconnectionContinuation = nil
+        }
+        self.receiveContinuations.modify { continuations in
+            for continuation in continuations.values {
+                continuation.resume(throwing: CancellationError())
+            }
+            continuations = [:]
+        }
+    }
+}
+
+extension NetworkSocketConnection: HeartbeatDelegate {
+    
+    private func startHeartbeat() throws {
+        if let time = options.heartbeatInterval {
+            guard time >= 1.0 else {
+                throw SocketError.wsError(.init(domain: .WSDataDomain, code: .invalidHeartbeatInternval))
+            }
+            Task { await heartbeatManager.value?.start(interval: time, repeats: true) }
+        }
+    }
+    
+    func sendHeartbeat() async throws {
+        try await self.ping()
+    }
+
+    func heartbeatMissed() async {
+        do {
+            try await self.close(withCode: .protocolCode(.goingAway))
+        } catch {
+            self.connection.forceCancel()
         }
     }
 }

@@ -216,7 +216,7 @@ final class CloseTests: AsyncSocketsTestCase {
         }
         
         // Test that message sequence terminates after close
-        for try await message in socket.messages() {
+        for try await _ in socket.messages() {
             receivedCount += 1
         }
         
@@ -227,7 +227,7 @@ final class CloseTests: AsyncSocketsTestCase {
     func testCloseTerminatesMessageSequenceConcurrent() async throws {
         // Create multiple sockets
         let socketCount = 3
-        var sockets = (0..<socketCount).map { _ in
+        let sockets = (0..<socketCount).map { _ in
             Socket(host: self.localhost, port: self.serverport, options: .init(allowInsecureConnections: true))
         }
         
@@ -254,7 +254,7 @@ final class CloseTests: AsyncSocketsTestCase {
         try await withThrowingTaskGroup(of: Void.self) { group in
             for (index, socket) in sockets.enumerated() {
                 group.addTask { @Sendable in
-                    for try await message in socket.messages() {
+                    for try await _ in socket.messages() {
                         receivedCounts.modify { $0[index] += 1 }
                     }
                 }

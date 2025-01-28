@@ -39,28 +39,26 @@
 import Foundation
 
 /// Async
-public final class AsyncSocketSequence<Message: Decodable & Sendable>: AsyncSequence, Subscriber, Sendable {
+public final class AsyncSocketSequence: AsyncSequence, Subscriber, Sendable {
     
-    public typealias AsyncIterator = AsyncThrowingStream<Message, Error>.Iterator
+    public typealias AsyncIterator = AsyncThrowingStream<SocketMessage, Error>.Iterator
     
     internal typealias Value = (connection: AsyncConnection, result: Result<SocketMessage, Error>)
     
-    private let continuationLock: Lock<AsyncThrowingStream<Message, Error>.Continuation?> = Lock(nil)
+    private let continuationLock: Lock<AsyncThrowingStream<SocketMessage, Error>.Continuation?> = Lock(nil)
     
-    private let stream: Lazy<AsyncThrowingStream<Message, Error>> = Lazy()
+    private let stream: Lazy<AsyncThrowingStream<SocketMessage, Error>> = Lazy()
 
     private let id: UUID
-    
-    private let decoder = JSONDecoder()
     
     internal init(connection: AsyncConnection) {
         self.id = UUID()
         self.stream.set { [weak self, weak connection] in
             guard let self, let connection else {
-                return AsyncThrowingStream<Message, Error> { $0.finish() }
+                return AsyncThrowingStream<SocketMessage, Error> { $0.finish() }
             }
             
-            return AsyncThrowingStream<Message, Error> { continuation in
+            return AsyncThrowingStream<SocketMessage, Error> { continuation in
                 self.continuationLock.set(continuation)
                 connection.receiveAndPublish()
             }
@@ -81,16 +79,7 @@ public final class AsyncSocketSequence<Message: Decodable & Sendable>: AsyncSequ
             guard let continuation else { return }
             switch value.result {
             case .success(let message):
-                if (Message.self != SocketMessage.self) {
-                    if let data = try? decode(message, type: Message.self) {
-                        continuation.yield(data)
-                    }
-                } else if let socketMessage = message as? Message {
-                    continuation.yield(socketMessage)
-                } else {
-                    continuation.finish(throwing: SocketError.wsError(.init(domain: .WSDataDomain, code: .failedToDecode)))
-                    return
-                }
+                continuation.yield(message)
                 value.connection.receiveAndPublish()
             case .failure(let error):
                 continuation.finish(throwing: error)
@@ -101,17 +90,7 @@ public final class AsyncSocketSequence<Message: Decodable & Sendable>: AsyncSequ
     deinit {
         end()
     }
-    
-    private func decode<T: Decodable>(_ message: SocketMessage, type: T.Type) throws -> T {
-        switch message {
-        case .string(let string):
-            guard let data = string.data(using: .utf8) else { throw SocketError.wsError(.init(domain: .WSDataDomain, code: .failedToDecode)) }
-            return try decoder.decode(type, from: data)
-        case .data(let data):
-            return try decoder.decode(type, from: data)
-        }
-    }
-    
+
     public static func == (lhs: AsyncSocketSequence, rhs: AsyncSocketSequence) -> Bool {
         lhs.id == rhs.id
     }
@@ -127,6 +106,85 @@ public final class AsyncSocketSequence<Message: Decodable & Sendable>: AsyncSequ
     /// End the current stream
     public func end() {
         continuationLock.value?.finish()
+    }
+}
+
+extension AsyncSocketSequence {
+    
+    /// Convenience function to compactMap the sequence into Text cases.
+    ///
+    /// If the sequence receives types `.data`, `.ping`, or `.pong`, they will be dropped silently
+    ///
+    /// Example:
+    ///
+    ///     for try await text in socket.messages().text() {
+    ///         print("received string: \(text)")
+    ///     }
+    ///
+    /// - Returns: An AsyncSequence that iterates the .string cases of all socket messages
+    public func text() -> AsyncCompactMapSequence<AsyncSocketSequence, String> {
+        self.compactMap { element in
+            switch element {
+            case .string(let message):
+                return message
+            default:
+                return nil
+            }
+        }
+    }
+    
+    /// Convenience function to compactMap the sequence into Data cases.
+    ///
+    /// If the sequence receives types `.string`, `.ping`, or `.pong`, they will be dropped silently
+    ///
+    /// Example:
+    ///
+    ///     for try await text in socket.messages().data() {
+    ///         print("received data: \(String(data: data, encoding: .utf8))")
+    ///     }
+    ///
+    /// - Returns: An AsyncSequence that iterates the .data cases of all socket messages
+    public func data() -> AsyncCompactMapSequence<AsyncSocketSequence, Data> {
+        self.compactMap { element in
+            switch element {
+            case .data(let data):
+                return data
+            default:
+                return nil
+            }
+        }
+    }
+    
+    /// Convenience function to compactMap the sequence into on objects of a given Decodable type.
+    ///
+    /// This function will attempt to decode both data and string messages to the given object type, and
+    /// drop them silently on failure.
+    ///
+    /// Example:
+    ///
+    ///     struct MyStruct: Decodable, Sendable {
+    ///         let id = Int
+    ///         let value = String
+    ///     }
+    ///
+    ///     for try await obj in socket.messages.obj(ofType: MyStruct.self) {
+    ///         print("received object \(obj.id) with value \(obj.value)")
+    ///     }
+    ///
+    /// - Returns: An AsyncSequence that iterates the .data cases of all socket messages
+    public func objects<T: Sendable & Decodable>(ofType type: T.Type) -> AsyncCompactMapSequence<AsyncSocketSequence, T> {
+        let decoder = JSONDecoder()
+        return self.compactMap { message in
+            switch message {
+            case .string(let string):
+                 guard let data = string.data(using: .utf8) else { return nil }
+                return try? decoder.decode(type, from: data)
+            case .data(let data):
+                return try? decoder.decode(type, from: data)
+            default:
+                return nil
+            }
+        }
     }
 }
 
