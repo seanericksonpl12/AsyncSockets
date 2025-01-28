@@ -9,6 +9,7 @@ import Network
 import Foundation
 import CryptoKit
 @testable import AsyncSockets
+import XCTest
 final class Server: Sendable {
     
     let startContinuation: Lock<CheckedContinuation<Void, Error>?> = Lock(nil)
@@ -22,6 +23,8 @@ final class Server: Sendable {
     let state: Lock<NWListener.State>
     let receiveCount = Lock(0)
     let sendCount = Lock(0)
+    
+    let closeExpectation = XCTestExpectation()
     
     init(port: UInt16) throws {
         let parameters = NWParameters.tcp
@@ -66,6 +69,38 @@ final class Server: Sendable {
     
     func unsafeStop() {
         listener.cancel()
+    }
+    
+    func pingAll() {
+        connections.modify { connections in
+            for connection in connections {
+                connection.ping()
+            }
+        }
+    }
+    
+    func sendAll(_ text: String) {
+        connections.modify { connections in
+            for connection in connections {
+                connection.send(text)
+            }
+        }
+    }
+    
+    func closeAll() {
+        connections.modify { connections in
+            for connection in connections {
+                connection.close()
+            }
+        }
+    }
+    
+    func dropNext() {
+        connections.modify { connections in
+            for connection in connections {
+                connection.dropNext()
+            }
+        }
     }
     
     private func setHandlers() {
@@ -113,7 +148,7 @@ final class Server: Sendable {
     }
     
     private func handleNewConnection(_ connection: NWConnection) {
-        let new = ServerConnection(connection: connection)
+        let new = ServerConnection(connection: connection, closeExpectation: closeExpectation)
         self.connections.modify { $0.append(new) }
         new.start()
     }

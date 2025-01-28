@@ -78,18 +78,14 @@ final class HeartbeatTests: AsyncSocketsTestCase {
     }
     
     func testHeartbeatMissed() async throws {
-        let expectation = XCTestExpectation()
         let socket = Socket(host: "localhost", port: 8000, options: .init(allowInsecureConnections: true, heartbeatInterval: 2.0))
         try await socket.connect()
-        var count = 0
+        server.dropNext()
         activeTasks.append(Task {
-            for try await message in socket.messages() {
-                if case .pong = message {
-                    count += 1
-                }
-                if count >= 15 { expectation.fulfill() }
+            for try await _ in socket.messages() {
             }
         })
-        await fulfillment(of: [expectation], timeout: 33.0)
+
+        await fulfillment(of: [server.closeExpectation], timeout: 5.0)
     }
 }

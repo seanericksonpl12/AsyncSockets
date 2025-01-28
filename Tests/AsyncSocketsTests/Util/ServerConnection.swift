@@ -10,14 +10,18 @@ import Network
 import Foundation
 import CryptoKit
 @testable import AsyncSockets
+import XCTest
 
 public final class ServerConnection: Sendable {
     
     private let buffer = Queue<Data>()
     private let sendQueue = DispatchQueue(label: "com.asyncsockets.server.send")
+    private let shouldDropNext = Lock(false)
     private let connection: NWConnection
+    let closeExpectation: XCTestExpectation
     
-    init(connection: NWConnection) {
+    init(connection: NWConnection, closeExpectation: XCTestExpectation) {
+        self.closeExpectation = closeExpectation
         self.connection = connection
         self.connection.parameters.defaultProtocolStack.applicationProtocols.insert(WebSocketProtocolOptions(), at: 0)
     }
@@ -39,6 +43,29 @@ public final class ServerConnection: Sendable {
             }
         }
         connection.start(queue: .main)
+    }
+    
+    func close() {
+        let frame = SocketFrame(opcode: .close, payload: Data(), mask: false)
+        let context = NWConnection.ContentContext(identifier: "serverContext", metadata: [NWProtocolWebSocket.Metadata(opcode: .close)])
+        sendWebSocketMessage(frame, with: context)
+    }
+    
+    func ping() {
+        let frame = SocketFrame(opcode: .ping, payload: "ping".data(using: .utf8) ?? Data(), mask: false)
+        let context = NWConnection.ContentContext(identifier: "serverContext", metadata: [NWProtocolWebSocket.Metadata(opcode: .ping)])
+        sendWebSocketMessage(frame, with: context, reversingPingPong: false)
+    }
+    
+    func send(_ text: String) {
+        let payload = text.data(using: .utf8)
+        let frame = SocketFrame(opcode: .text, payload: payload ?? Data(), mask: false)
+        let context = NWConnection.ContentContext(identifier: "serverContext", metadata: [NWProtocolWebSocket.Metadata(opcode: .text)])
+        sendWebSocketMessage(frame, with: context)
+    }
+    
+    func dropNext() {
+        shouldDropNext.modify { $0 = true }
     }
     
     private func receiveHTTPHeaders(on connection: NWConnection) {
@@ -124,6 +151,10 @@ public final class ServerConnection: Sendable {
             if connection.state == .ready {
                 self.receiveWebSocketMessage()
             }
+            if shouldDropNext.value {
+                shouldDropNext.modify { $0 = false }
+                return
+            }
             
             if let error = error {
                 print("Receive error: \(error)")
@@ -169,6 +200,7 @@ public final class ServerConnection: Sendable {
                 case .binary:
                     self.sendWebSocketMessage(frame, with: context)
                 case .close:
+                    self.closeExpectation.fulfill()
                     self.connection.cancel()
                 case .ping:
                     self.sendWebSocketMessage(frame, with: context)
@@ -181,11 +213,11 @@ public final class ServerConnection: Sendable {
         }
     }
 
-    func sendWebSocketMessage(_ data: SocketFrame, with context: NWConnection.ContentContext?) {
+    func sendWebSocketMessage(_ data: SocketFrame, with context: NWConnection.ContentContext?, reversingPingPong: Bool = true) {
         guard connection.state == .ready else { return }
         
-        let opcodeToSend = data.opcode == .ping ? .pong : data.opcode
-        let payloadToSend = data.opcode == .ping ? "pong".data(using: .utf8) ?? data.payload : data.payload
+        let opcodeToSend = reversingPingPong ? (data.opcode == .ping ? .pong : data.opcode) : data.opcode
+        let payloadToSend = reversingPingPong ? (data.opcode == .ping ? "pong".data(using: .utf8) ?? data.payload : data.payload) : data.payload
         let frame = SocketFrame(opcode: opcodeToSend, payload: payloadToSend, mask: false)
         connection.send(content: frame.raw, contentContext: context ?? .defaultMessage, completion: .contentProcessed { [weak self] error in
             if let error = error {

@@ -50,6 +50,9 @@ public final class Socket: Sendable {
         /// The time in seconds between heartbeat ping/pong.  If nil, no heartbeat will be sent.  Default is `5.0`
         public var heartbeatInterval: TimeInterval?
         
+        /// Set if the socket should disconnect and kill all listeners when it recieves a close frame from the server.  Default is `true`
+        public var disconnectOnClose: Bool
+        
         /// Additional TCP Protocol options, from the `Network` framework.
         public var tcpProtocolOptions: NWProtocolTCP.Options
         
@@ -60,11 +63,13 @@ public final class Socket: Sendable {
         public init(
             allowInsecureConnections: Bool = false,
             heartbeatInterval: TimeInterval? = 5.0,
+            disconnectOnClose: Bool = true,
             tcpProtocolOptions: NWProtocolTCP.Options = NWProtocolTCP.Options(),
             websocketProtocolOptions: NWProtocolWebSocket.Options = NetworkSocketConnection.defaultSocketOptions
         ) {
             self.allowInsecureConnections = allowInsecureConnections
             self.heartbeatInterval = heartbeatInterval
+            self.disconnectOnClose = disconnectOnClose
             self.tcpProtocolOptions = tcpProtocolOptions
             self.websocketProtocolOptions = websocketProtocolOptions
         }
@@ -232,6 +237,14 @@ public final class Socket: Sendable {
     /// - Parameter withCode: The close code to send the server, uses `.goingAway` if nil.
     public func close(withCode closeCode: CloseCode? = nil) async throws {
         try await self.connection.close(withCode: closeCode)
+    }
+    
+    /// Force close the socket connection immediately and terminate all streams, not giving a reason to the server.
+    ///
+    /// Prefer using the non async `close(withCode:)` function to this one to properly notify the server of the closure, unless
+    /// immediate closure is needed.
+    public func forceClose() {
+        self.connection.forceClose()
     }
     
     /// Send a string through the websocket.

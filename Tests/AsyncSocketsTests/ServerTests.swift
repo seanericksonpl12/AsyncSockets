@@ -224,4 +224,73 @@ final class ServerTests: XCTestCase {
         
         XCTAssertEqual(count, 20)
     }
+    
+    func testPingAll() async throws {
+        let expectation = XCTestExpectation()
+        try await server.start()
+        let socket = Socket(host: "localhost", port: 8000, options: .init(allowInsecureConnections: true, heartbeatInterval: nil))
+        try await socket.connect()
+        
+        activeTasks.append(Task {
+            for try await message in socket.messages() {
+                print(message)
+                if case .ping = message {
+                    expectation.fulfill()
+                }
+            }
+        })
+        
+        server.pingAll()
+        await fulfillment(of: [expectation], timeout: 1.0)
+    }
+    
+    func testSendAll() async throws {
+        let expectation = XCTestExpectation()
+        try await server.start()
+        let socket = Socket(host: "localhost", port: 8000, options: .init(allowInsecureConnections: true, heartbeatInterval: nil))
+        try await socket.connect()
+        
+        activeTasks.append(Task {
+            for try await message in socket.messages().text() {
+                if message == "test" {
+                    expectation.fulfill()
+                }
+            }
+        })
+        
+        server.sendAll("test")
+        await fulfillment(of: [expectation], timeout: 1.0)
+    }
+    
+    func testCloseAll() async throws {
+        let expectation = XCTestExpectation()
+        try await server.start()
+        let socket = Socket(host: "localhost", port: 8000, options: .init(allowInsecureConnections: true, heartbeatInterval: nil))
+        try await socket.connect()
+        
+        activeTasks.append(Task {
+            for try await message in socket.messages().text() {
+                XCTFail()
+            }
+            expectation.fulfill()
+        })
+        
+        server.closeAll()
+        await fulfillment(of: [expectation], timeout: 1.0)
+        
+        let expectation2 = XCTestExpectation()
+        expectation2.isInverted = true
+        let socket2 = Socket(host: "localhost", port: 8000, options: .init(allowInsecureConnections: true, heartbeatInterval: nil, disconnectOnClose: false))
+        try await socket2.connect()
+        
+        activeTasks.append(Task {
+            for try await _ in socket2.messages().text() {
+                XCTFail()
+            }
+            expectation.fulfill()
+        })
+        
+        server.closeAll()
+        await fulfillment(of: [expectation2], timeout: 1.0)
+    }
 }

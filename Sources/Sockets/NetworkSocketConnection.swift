@@ -156,6 +156,7 @@ public final class NetworkSocketConnection: AsyncConnection {
     deinit {
         killAllMessageStreams()
         killAllEventStreams()
+        killHeartbeat()
         killAllContinuations()
     }
 }
@@ -192,27 +193,37 @@ extension NetworkSocketConnection {
     
     /// Close the conection and clean up any process / storage
     func close(withCode code: CloseCode?) {
-        defer {
-            killAllMessageStreams()
-            killAllEventStreams()
-        }
+        defer { killAllMessageStreams() }
+        killHeartbeat()
+        
         guard self.state != .disconnected else { return }
         
-        // TODO: - Send correct close code info to server
-        self.handleClose(closeCode: code ?? .protocolCode(.goingAway), reason: nil)
-        self.connection.cancel()
+        let context = Context(identifier: "closeContext", metadata: [WebSocketMetadata(opcode: .close)])
+        
+        self.connection.send(
+            content: nil,
+            contentContext: context,
+            isComplete: true,
+            completion: .contentProcessed({ [weak self] error in
+                guard let self else { return }
+                if error != nil { self.connection.forceCancel() }
+                self.handleClose(closeCode: code ?? .protocolCode(.goingAway), reason: nil)
+                self.connection.cancel()
+            })
+        )
     }
     
     /// Close the conection and clean up any process / storage, waiting for the proper FIN/ACK messages before returning.
     func close(withCode code: CloseCode?) async throws {
-        defer {
-            killAllMessageStreams()
-            killAllEventStreams()
-        }
+        defer { killAllMessageStreams() }
+        killHeartbeat()
         
         guard self.state != .disconnected else {
             return
         }
+        
+        let context = Context(identifier: "closeContext", metadata: [WebSocketMetadata(opcode: .close)])
+        try await self.send(data: nil, context: context)
         
         // TODO: - Send correct close code info to server
         self.handleClose(closeCode: code ?? .protocolCode(.goingAway), reason: nil)
@@ -239,6 +250,11 @@ extension NetworkSocketConnection {
         }
     }
     
+    func forceClose() {
+        killAllMessageStreams()
+        killHeartbeat()
+        self.connection.forceCancel()
+    }
     
     /// Encode and send a string through the connection
     func send(_ text: String) async throws {
@@ -262,7 +278,7 @@ extension NetworkSocketConnection {
         try await send(data: data, context: context)
     }
     
-    private func send(data: Data, context: Context) async throws {
+    private func send(data: Data?, context: Context) async throws {
         guard self.state == .connected else {
             throw SocketError.wsError(
                 .init(
@@ -372,7 +388,12 @@ extension NetworkSocketConnection {
                 guard let data else { return }
                 completion(.success(.data(data)))
             case .close:
-                self.handleClose(closeCode: metadata.closeCode, reason: data)
+                if options.disconnectOnClose {
+                    killAllMessageStreams()
+                    killHeartbeat()
+                } else {
+                    self.receive(connection: connection, completion: completion)
+                }
             case .ping:
                 completion(.success(.ping))
             case .pong:
@@ -587,5 +608,9 @@ extension NetworkSocketConnection: HeartbeatDelegate {
         } catch {
             self.connection.forceCancel()
         }
+    }
+    
+    func killHeartbeat() {
+        self.heartbeatManager.value?.stop()
     }
 }
