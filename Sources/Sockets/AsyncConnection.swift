@@ -55,6 +55,7 @@ protocol AsyncConnection: Sendable, AnyObject {
     func connect() async throws
     func close(withCode code: CloseCode?) async throws
     func close(withCode code: CloseCode?)
+    func forceClose()
     func receive() async throws -> SocketMessage
     func receive<T: Decodable>(decodingType: T.Type) async throws -> T
     func receiveAndPublish()
